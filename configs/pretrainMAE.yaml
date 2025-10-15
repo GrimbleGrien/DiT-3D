@@ -6,6 +6,7 @@ model : {
   mask_ratio: 0.6,
   mask_type: 'rand',
   trans_dim: 384,
+  hidden_size: 1152,
   encoder_dims: 384,
   depth: 12,
   drop_path_rate: 0.1,

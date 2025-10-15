@@ -7,7 +7,7 @@ import numpy as np
 import timm
 from timm.models.layers import DropPath, trunc_normal_
 from knn_cuda import KNN
-from utils import misc
+from utils.misc import fps
 from utils.config import *
 
 class Encoder(nn.Module):   ## Embedding module
@@ -59,7 +59,7 @@ class Group(nn.Module):  # FPS + KNN
         '''
         batch_size, num_points, _ = xyz.shape
         # fps the centers out
-        center = misc.fps(xyz, self.num_group) # B G 3
+        center = fps(xyz, self.num_group) # B G 3
         # knn to get the neighborhood
         _, idx = self.knn(xyz, center) # B G M
         assert idx.size(1) == self.num_group
@@ -160,11 +160,12 @@ class TransformerEncoder(nn.Module):
 
 
 class MaskedEmbedder(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, hidden_size: int = None):
         super().__init__()
         config_model = cfg_from_yaml_file(args.mae_config)
         config = config_model.model
         self.config = config
+        self.hidden_size = hidden_size or config.hidden_size   # 1152
         self.trans_dim = config.trans_dim
         self.depth = config.depth
         self.drop_path_rate = config.drop_path_rate
@@ -200,6 +201,8 @@ class MaskedEmbedder(nn.Module):
             nn.Linear(384, 256)
             )
 
+        self.final_proj = nn.Linear(self.trans_dim, self.hidden_size)
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=.02)
@@ -226,10 +229,11 @@ class MaskedEmbedder(nn.Module):
         # transformer
         x = self.blocks(x, pos)
         x = self.norm(x)
-        x_feat = x[:, 0:].max(1)[0]
+        x_feat = x[:, 0:].max(1)[0]        # [B, trans_dim]
         #x_feat = x[:, 0:].max(1)[0] + x[:, 0:].mean(1)
         #x_feat = torch.cat((x[:, 0:].max(1)[0],x[:, 0:].mean(1)), dim=1)
         #x_inv_feat = self.inv_head(x_feat)
+        x_feat = self.final_proj(x_feat)   # [B, hidden_size]
         return x_feat
         #ret = self.cls_head_finetune(concat_f)
 
@@ -239,6 +243,14 @@ if __name__ == '__main__':
             self.mae_config = 'configs/pretrainMAE.yaml'
     args = Args()
     model = MaskedEmbedder(args)
+
+    # ---------- NEW: pick device and move model + inputs to it ----------
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = model.to(device)
+
     pts = torch.randn(2, 1024, 3)
+    pts = pts.to(device)   # <--- MOVE INPUTS TO GPU
+    # --------------------------------------------------------------------
+
     ret = model(pts)
     print(ret.shape)
