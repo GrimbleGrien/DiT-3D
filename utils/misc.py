@@ -1,5 +1,16 @@
 import os
 import numpy as np
+from pointnet2_ops import pointnet2_utils
+# https://github.com/Pang-Yatian/Point-MAE/issues/3
+
+def fps(data, number):
+    '''
+        data B N 3
+        number int
+    '''
+    fps_idx = pointnet2_utils.furthest_point_sample(data, number) 
+    fps_data = pointnet2_utils.gather_operation(data.transpose(1, 2).contiguous(), fps_idx).transpose(1,2).contiguous()
+    return fps_data
 
 class Evaluator(object):
     def __init__(self, results_dir='./results'):
