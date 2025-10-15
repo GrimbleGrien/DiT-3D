@@ -18,7 +18,7 @@ from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
 
 from modules.voxelization import Voxelization
 import modules.functional as F
-
+from models.point_mae import MaskedEmbedder
 
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
@@ -186,7 +186,9 @@ class DiT(nn.Module):
         mlp_ratio=4.0,
         class_dropout_prob=0.1,
         num_classes=1,
-        learn_sigma=False
+        learn_sigma=False,
+            use_mae=False,          # ✅ new flag
+        mae_config_path=None    # ✅ optional config
     ):
         super().__init__()
         self.learn_sigma = learn_sigma
@@ -203,6 +205,16 @@ class DiT(nn.Module):
         
         self.t_embedder = TimestepEmbedder(hidden_size)
         self.y_embedder = LabelEmbedder(num_classes, hidden_size, class_dropout_prob)
+
+        # --- optional masked embedder ---
+        self.use_mae = use_mae
+        if self.use_mae:
+            class Args: pass
+            args = Args()
+            args.mae_config = mae_config_path or 'configs/pretrainMAE.yaml'
+            self.mae_embedder = MaskedEmbedder(args, hidden_size=hidden_size)
+        else:
+            self.mae_embedder = None
 
         # Will use fixed sin-cos embedding:
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
@@ -263,12 +275,13 @@ class DiT(nn.Module):
         points = x0.reshape(shape=(x0.shape[0], c, x * p, y * p, z * p))
         return points
 
-    def forward(self, x, t, y):
+    def forward(self, x, t, y, mae=None):
         """
         Forward pass of DiT.
         x: (N, C, P) tensor of spatial inputs (point clouds or latent representations of images)
         t: (N,) tensor of diffusion timesteps
         y: (N,) tensor of class labels
+        mae: optional masked point cloud (N, num_points, 3)
         """
 
         # Voxelization
@@ -279,8 +292,16 @@ class DiT(nn.Module):
         x = x + self.pos_embed 
 
         t = self.t_embedder(t)  
-        y = self.y_embedder(y, self.training)    
-        c = t + y                                
+        y = self.y_embedder(y, self.training)
+
+        # --- optional MAE embedding ---
+        if self.use_mae and mae is not None:
+            mae_embed = self.mae_embedder(mae)       # [B, hidden_size]
+        else:
+            mae_embed = torch.zeros_like(t)          # fallback
+
+        # --- conditioning ---
+        c = t + y + mae_embed
 
         for block in self.blocks:
             x = block(x, c)                      
@@ -499,3 +520,34 @@ DiT3D_models = {
     'DiT-B/2':  DiT_B_2,   'DiT-B/4':  DiT_B_4,   'DiT-B/8':  DiT_B_8,
     'DiT-S/2':  DiT_S_2,   'DiT-S/4':  DiT_S_4,   'DiT-S/8':  DiT_S_8,
 }
+
+if __name__ == "__main__":
+    import torch
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # --- Model init ---
+    model = DiT(
+        input_size=32,
+        patch_size=4,
+        in_channels=3,
+        hidden_size=384,       # match LabelEmbedder hidden_size
+        depth=12,                # small for test
+        num_heads=6,
+        class_dropout_prob=0.1,
+        num_classes=10,
+        use_mae=True,           # enable MaskedEmbedder
+        mae_config_path="configs/pretrainMAE.yaml"
+    ).to(device)
+    model.eval()
+
+    # --- Dummy inputs ---
+    batch_size = 2
+    pts = torch.randn(batch_size, 1024, 3, device=device)   # point cloud for MAE
+    x = torch.randn(batch_size, 3, 32*32*32, device=device) # dummy voxel input
+    t = torch.randint(0, 1000, (batch_size,), device=device)
+    y = torch.randint(0, 10, (batch_size,), device=device)
+
+    # --- Forward pass ---
+    out = model(x, t, y, mae=pts)
+    print("Output shape:", out.shape)
