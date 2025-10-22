@@ -187,7 +187,7 @@ class DiT(nn.Module):
         class_dropout_prob=0.1,
         num_classes=1,
         learn_sigma=False,
-            use_mae=False,          # ✅ new flag
+        use_mae=False,          # ✅ new flag
         mae_config_path=None    # ✅ optional config
     ):
         super().__init__()

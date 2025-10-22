@@ -422,7 +422,9 @@ class Model(nn.Module):
         else:
             self.model = DiT3D_models[args.model_type](pretrained=args.use_pretrained, 
                                                     input_size=args.voxel_size, 
-                                                    num_classes=args.num_classes
+                                                    num_classes=args.num_classes,
+                                                    use_mae=args.use_mae,                   # ✅ NEW
+                                                    mae_config_path=args.mae_config_path    # ✅ NEW
                                                     )
 
 
@@ -880,6 +882,9 @@ def parse_args():
     parser.add_argument('--loss_type', default='mse')
     parser.add_argument('--model_mean_type', default='eps')
     parser.add_argument('--model_var_type', default='fixedsmall')
+
+    parser.add_argument('--use_mae', action='store_true', help='Enable MaskedEmbedder conditioning')
+    parser.add_argument('--mae_config_path', type=str, default='configs/pretrainMAE.yaml', help='Path to MAE config file')
 
     parser.add_argument('--lr', type=float, default=2e-4, help='learning rate for E, default=0.0002')
     parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
