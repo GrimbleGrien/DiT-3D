@@ -563,6 +563,33 @@ def get_dataloader(opt, train_dataset, test_dataset=None):
 
     return train_dataloader, test_dataloader, train_sampler, test_sampler
 
+def save_checkpoint(model, optimizer, epoch, loss, output_dir, ema=None, best_loss=None):
+    # os.makedirs(output_dir, exist_ok=True)
+    tmp_path = os.path.join(output_dir, "tmp.pth")
+
+    # --- Prepare checkpoint dictionary ---
+    save_dict = {
+        'epoch': epoch,
+        'model_state': model.state_dict(),
+        'optimizer_state': optimizer.state_dict(),
+        'loss': loss
+    }
+
+    if ema is not None:
+        save_dict['ema'] = ema.state_dict()
+
+    # --- Atomic save for reliability ---
+    torch.save(save_dict, tmp_path)
+    os.replace(tmp_path, os.path.join(output_dir, "latest.pth"))
+
+    # --- Save best model (based on lowest loss) ---
+    if best_loss is None or loss < best_loss:
+        torch.save(save_dict, os.path.join(output_dir, "best.pth"))
+        best_loss = loss
+        print(f"New best model saved at epoch {epoch}, loss={loss:.4f}")
+
+    return best_loss
+
 
 def train(gpu, opt, output_dir, noises_init):
 
@@ -641,7 +668,7 @@ def train(gpu, opt, output_dir, noises_init):
     if should_diag:
         logger.info(opt)
 
-    print("Model = %s" % str(model))
+    # print("Model = %s" % str(model))
     total_params = sum(param.numel() for param in model.parameters())/1e6
     print("Total_params = %s MB " % str(total_params))   
 
@@ -786,37 +813,54 @@ def train(gpu, opt, output_dir, noises_init):
             logger.info('Generation: train')
             model.train()
 
-        if (epoch + 1) % opt.saveIter == 0:
+        if (epoch + 1) % opt.saveIter == 0 and should_diag:
+            best_loss = save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch,
+                loss=loss.item(),
+                output_dir=output_dir,
+                ema=ema if opt.use_ema else None,
+                best_loss=best_loss if 'best_loss' in locals() else None
+            )
 
-            if should_diag:
+        # print(output_dir)
+        # if (epoch + 1) % opt.saveIter == 0:
+
+        #     if should_diag:
 
                 
-                save_dict = {
-                    'epoch': epoch,
-                    'model_state': model.state_dict(),
-                    'optimizer_state': optimizer.state_dict()
-                }
+        #         save_dict = {
+        #             'epoch': epoch,
+        #             'model_state': model.state_dict(),
+        #             'optimizer_state': optimizer.state_dict()
+        #         }
 
-                if opt.use_ema:
-                    save_dict.update({'ema': ema.state_dict()})
+        #         if opt.use_ema:
+        #             save_dict.update({'ema': ema.state_dict()})
                 
 
-                torch.save(save_dict, '%s/epoch_%d.pth' % (output_dir, epoch))
+        #         torch.save(save_dict, '%s/epoch_%d.pth' % (output_dir, epoch))
 
 
-            if opt.distribution_type == 'multi':
-                dist.barrier()
-                map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
-                if opt.use_ema:
-                    checkpoint = torch.load('%s/epoch_%d.pth' % (output_dir, epoch), map_location=map_location)['ema']
-                    checkpoint_dict = {k.replace('model.', 'model.module.'): checkpoint[k] for k in checkpoint if k.startswith('model.')}
-                    model.load_state_dict(checkpoint_dict)
-                else:
-                    model.load_state_dict(
-                    torch.load('%s/epoch_%d.pth' % (output_dir, epoch), map_location=map_location)['model_state'])
+
+        #     if opt.distribution_type == 'multi':
+        #         dist.barrier()
+        #         map_location = {'cuda:%d' % 0: 'cuda:%d' % gpu}
+        #         if opt.use_ema:
+        #             checkpoint = torch.load('%s/epoch_%d.pth' % (output_dir, epoch), map_location=map_location)['ema']
+        #             checkpoint_dict = {k.replace('model.', 'model.module.'): checkpoint[k] for k in checkpoint if k.startswith('model.')}
+        #             model.load_state_dict(checkpoint_dict)
+        #         else:
+        #             model.load_state_dict(
+        #             torch.load('%s/epoch_%d.pth' % (output_dir, epoch), map_location=map_location)['model_state'])
                 
 
-    dist.destroy_process_group()
+    # dist.destroy_process_group()
+    import torch.distributed as dist
+
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
 
 def main():
     opt = parse_args()
