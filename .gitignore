@@ -1,2 +1,7 @@
+
+# cache
 .DS_Store
+
+# ckpts
 .pth
+checkpoints/
