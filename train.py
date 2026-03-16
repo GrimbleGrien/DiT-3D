@@ -10,11 +10,12 @@ from utils.file_utils import *
 from utils.visualize import *
 import torch.distributed as dist
 from datasets.shapenet_data_pc import ShapeNet15kPointClouds
+from datasets.mae_embeddings import MAEEmbeddingDataset
 
 from copy import deepcopy
 from collections import OrderedDict
 
-from models.dit3d import DiT3D_models
+from models.dit3d import DiT3D_models, EmbeddingDiT_S_4
 from models.dit3d_window_attn import DiT3D_models_WindAttn
 
 from tensorboardX import SummaryWriter
@@ -412,20 +413,33 @@ class Model(nn.Module):
         super(Model, self).__init__()
         self.diffusion = GaussianDiffusion(betas, loss_type, model_mean_type, model_var_type)
 
-        if args.window_size > 0:
-            self.model = DiT3D_models_WindAttn[args.model_type](pretrained=args.use_pretrained, 
-                                                   input_size=args.voxel_size, 
-                                                   window_size=args.window_size, 
-                                                   window_block_indexes=args.window_block_indexes, 
-                                                   num_classes=args.num_classes
-                                                )
+        if getattr(args, "target_embeddings", False):
+            self.model = EmbeddingDiT_S_4(
+                embedding_dim=args.embedding_dim,
+                hidden_size=384,
+                depth=12,
+                num_heads=6,
+                class_dropout_prob=args.class_dropout_prob,
+                num_classes=args.num_classes,
+                use_mae=args.use_mae,
+                mae_config_path=args.mae_config_path,
+            )
+        elif args.window_size > 0:
+            self.model = DiT3D_models_WindAttn[args.model_type](
+                pretrained=args.use_pretrained,
+                input_size=args.voxel_size,
+                window_size=args.window_size,
+                window_block_indexes=args.window_block_indexes,
+                num_classes=args.num_classes,
+            )
         else:
-            self.model = DiT3D_models[args.model_type](pretrained=args.use_pretrained, 
-                                                    input_size=args.voxel_size, 
-                                                    num_classes=args.num_classes,
-                                                    use_mae=args.use_mae,                   # ✅ NEW
-                                                    mae_config_path=args.mae_config_path    # ✅ NEW
-                                                    )
+            self.model = DiT3D_models[args.model_type](
+                pretrained=args.use_pretrained,
+                input_size=args.voxel_size,
+                num_classes=args.num_classes,
+                use_mae=args.use_mae,
+                mae_config_path=args.mae_config_path,
+            )
 
 
     def prior_kl(self, x0):
@@ -704,7 +718,10 @@ def train(gpu, opt, output_dir, noises_init):
 
         for i, data in enumerate(dataloader):
 
-            x = data['train_points'].transpose(1,2)
+            if opt.target_embeddings:
+                x = data['embedding'].unsqueeze(-1)
+            else:
+                x = data['train_points'].transpose(1,2)
             noises_batch = noises_init[data['idx']].transpose(1,2)
             y = data['cate_idx']
 
@@ -776,7 +793,7 @@ def train(gpu, opt, output_dir, noises_init):
 
 
 
-        if (epoch + 1) % opt.vizIter == 0 and should_diag:
+        if not opt.target_embeddings and (epoch + 1) % opt.vizIter == 0 and should_diag:
             logger.info('Generation: eval')
 
             model.eval()
@@ -873,7 +890,13 @@ def main():
     copy_source(__file__, output_dir)
 
     ''' workaround '''
-    train_dataset, _ = get_dataset(opt.dataroot, opt.npoints, opt.category)
+    if opt.target_embeddings:
+        assert opt.embedding_data_path, "Provide --embedding_data_path when target embeddings are requested"
+        train_dataset = MAEEmbeddingDataset(opt.embedding_data_path)
+        opt.npoints = 1
+        opt.nc = opt.embedding_dim
+    else:
+        train_dataset, _ = get_dataset(opt.dataroot, opt.npoints, opt.category)
     noises_init = torch.randn(len(train_dataset), opt.npoints, opt.nc)
 
     # Use random port to avoid collision between parallel jobs
@@ -901,6 +924,12 @@ def parse_args():
     parser.add_argument('--dataroot', default='ShapeNetCore.v2.PC15k/')
     parser.add_argument('--category', default='chair')
     parser.add_argument('--num_classes', type=int, default=55)
+    parser.add_argument('--target_embeddings', action='store_true',
+                        help='train on extracted MaskedEmbedder vectors instead of raw point clouds')
+    parser.add_argument('--embedding_data_path', type=str, default='',
+                        help='path to torch file created by scripts/compute_mae_embeddings.py')
+    parser.add_argument('--embedding_dim', type=int, default=384,
+                        help='dimension of precomputed MaskedEmbedder vectors')
 
     parser.add_argument('--bs', type=int, default=16, help='input batch size')
     parser.add_argument('--workers', type=int, default=16, help='workers')

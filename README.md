@@ -87,6 +87,19 @@ Please check more training scripts in the [scripts](./scripts) folder.
 
 During training, we train each model using each category for 10,000 epochs. We evaluated the test set using checkpoints saved every 25 epochs and reported the best results.
 
+### MaskedEmbedder embedding workflow
+1. Extract the dataset of MaskedEmbedder vectors (default path `data/mae_embeddings/chair/train.pt`) with
+   ```bash
+   python scripts/compute_mae_embeddings.py --split train --max_samples 64 --output data/mae_embeddings/chair/train.pt
+   ```
+   point the script at whichever DiT checkpoint you want to borrow MAE weights from via `--checkpoint`.
+2. Train the embedding diffusion variant by passing the new CLI flags:
+   ```bash
+   python train.py --target_embeddings --embedding_data_path data/mae_embeddings/chair/train.pt \
+       --embedding_dim 384 --model_type DiT-S/4 --niter 1 --saveIter 1
+   ```
+   The embedding variant currently calls `EmbeddingDiT_S/4` under the hood and skips the voxel visualization steps.
+
 ## Testing
 
 For testing and visualization on chair using the DiT-3D model (S/4, no window attention) with voxel size of 32, please run

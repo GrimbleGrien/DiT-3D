@@ -7,8 +7,9 @@ python train.py --gpu 0 \
     --voxel_size 32 \
     --lr 1e-4 \
     --use_tb \
-    --niter 1000 \
+    --niter 2000 \
     --saveIter 1 \
     --use_mae \
     --mae_config_path 'configs/pretrainMAE.yaml' \
     --vizIter 100 \
+    --model 'checkpoints/mae1000/latest.pth'
