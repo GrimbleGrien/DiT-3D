@@ -14,4 +14,5 @@ python train.py \
   --lr 1e-4 \
   --niter 1000 \
   --saveIter 10 \
+  --vizIter 10 \
   --use_tb
