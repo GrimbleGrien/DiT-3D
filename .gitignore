@@ -1,7 +1,9 @@
 
 # cache
 .DS_Store
+.__pycache__/
 
 # ckpts
 .pth
 checkpoints/
+data/

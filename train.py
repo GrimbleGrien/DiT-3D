@@ -17,6 +17,7 @@ from collections import OrderedDict
 
 from models.dit3d import DiT3D_models, EmbeddingDiT_S_4
 from models.dit3d_window_attn import DiT3D_models_WindAttn
+from models.embedding_dit_legacy import EmbeddingDiTLegacy_S_4
 
 from tensorboardX import SummaryWriter
 
@@ -414,16 +415,28 @@ class Model(nn.Module):
         self.diffusion = GaussianDiffusion(betas, loss_type, model_mean_type, model_var_type)
 
         if getattr(args, "target_embeddings", False):
-            self.model = EmbeddingDiT_S_4(
-                embedding_dim=args.embedding_dim,
-                hidden_size=384,
-                depth=12,
-                num_heads=6,
-                class_dropout_prob=args.class_dropout_prob,
-                num_classes=args.num_classes,
-                use_mae=args.use_mae,
-                mae_config_path=args.mae_config_path,
-            )
+            if args.embedding_backbone == 'dit':
+                self.model = EmbeddingDiTLegacy_S_4(
+                    embedding_dim=args.embedding_dim,
+                    hidden_size=384,
+                    depth=12,
+                    num_heads=6,
+                    class_dropout_prob=args.class_dropout_prob,
+                    num_classes=args.num_classes,
+                    use_mae=args.use_mae,
+                    mae_config_path=args.mae_config_path,
+                )
+            else:
+                self.model = EmbeddingDiT_S_4(
+                    embedding_dim=args.embedding_dim,
+                    hidden_size=384,
+                    depth=12,
+                    num_heads=6,
+                    class_dropout_prob=args.class_dropout_prob,
+                    num_classes=args.num_classes,
+                    use_mae=args.use_mae,
+                    mae_config_path=args.mae_config_path,
+                )
         elif args.window_size > 0:
             self.model = DiT3D_models_WindAttn[args.model_type](
                 pretrained=args.use_pretrained,
@@ -623,6 +636,9 @@ def train(gpu, opt, output_dir, noises_init):
     if should_diag:
         outf_syn, = setup_output_subdirs(output_dir, 'syn')
 
+    viz_model = None
+    viz_diffusion = None
+
     if opt.distribution_type == 'multi':
         if opt.dist_url == "env://" and opt.rank == -1:
             opt.rank = int(os.environ["RANK"])
@@ -701,6 +717,9 @@ def train(gpu, opt, output_dir, noises_init):
 
     def new_x_chain(x, num_chain):
         return torch.randn(num_chain, *x.shape[1:], device=x.device)
+
+    def new_embedding_chain(num_chain, device):
+        return torch.randn(num_chain, opt.embedding_dim, 1, device=device)
 
     def new_y_chain(y, num_chain, num_classes):
         return torch.randint(low=0,high=num_classes,size=(num_chain,),device=y.device)
@@ -793,39 +812,91 @@ def train(gpu, opt, output_dir, noises_init):
 
 
 
-        if not opt.target_embeddings and (epoch + 1) % opt.vizIter == 0 and should_diag:
+        if (epoch + 1) % opt.vizIter == 0 and should_diag:
             logger.info('Generation: eval')
-
             model.eval()
             with torch.no_grad():
+                if not opt.target_embeddings:
+                    x_gen_eval = model.gen_samples(new_x_chain(x, 25).shape, x.device, new_y_chain(y, 25, opt.num_classes), clip_denoised=False)
+                    x_gen_list = model.gen_sample_traj(new_x_chain(x, 1).shape, x.device, new_y_chain(y, 1, opt.num_classes), freq=40, clip_denoised=False)
+                    x_gen_all = torch.cat(x_gen_list, dim=0)
 
-                x_gen_eval = model.gen_samples(new_x_chain(x, 25).shape, x.device, new_y_chain(y,25,opt.num_classes), clip_denoised=False)
-                x_gen_list = model.gen_sample_traj(new_x_chain(x, 1).shape, x.device, new_y_chain(y,1,opt.num_classes), freq=40, clip_denoised=False)
-                x_gen_all = torch.cat(x_gen_list, dim=0)
+                    gen_stats = [x_gen_eval.mean(), x_gen_eval.std()]
+                    gen_eval_range = [x_gen_eval.min().item(), x_gen_eval.max().item()]
 
-                gen_stats = [x_gen_eval.mean(), x_gen_eval.std()]
-                gen_eval_range = [x_gen_eval.min().item(), x_gen_eval.max().item()]
+                    logger.info('      [{:>3d}/{:>3d}]  '
+                                 'eval_gen_range: [{:>10.4f}, {:>10.4f}]     '
+                                 'eval_gen_stats: [mean={:>10.4f}, std={:>10.4f}]      '
+                        .format(
+                        epoch, opt.niter,
+                        *gen_eval_range, *gen_stats,
+                    ))
 
-                logger.info('      [{:>3d}/{:>3d}]  '
-                             'eval_gen_range: [{:>10.4f}, {:>10.4f}]     '
-                             'eval_gen_stats: [mean={:>10.4f}, std={:>10.4f}]      '
-                    .format(
-                    epoch, opt.niter,
-                    *gen_eval_range, *gen_stats,
-                ))
+                    visualize_pointcloud_batch('%s/epoch_%03d_samples_eval.png' % (outf_syn, epoch),
+                                               x_gen_eval.transpose(1, 2), None, None,
+                                               None)
 
-            visualize_pointcloud_batch('%s/epoch_%03d_samples_eval.png' % (outf_syn, epoch),
-                                       x_gen_eval.transpose(1, 2), None, None,
-                                       None)
+                    visualize_pointcloud_batch('%s/epoch_%03d_samples_eval_all.png' % (outf_syn, epoch),
+                                               x_gen_all.transpose(1, 2), None,
+                                               None,
+                                               None)
 
-            visualize_pointcloud_batch('%s/epoch_%03d_samples_eval_all.png' % (outf_syn, epoch),
-                                       x_gen_all.transpose(1, 2), None,
-                                       None,
-                                       None)
+                    visualize_pointcloud_batch('%s/epoch_%03d_x.png' % (outf_syn, epoch), x.transpose(1, 2), None,
+                                               None,
+                                               None)
+                else:
+                    if not opt.embedding_viz_checkpoint:
+                        logger.warning('Skipping embedding visualization because --embedding_viz_checkpoint is not set.')
+                    else:
+                        if viz_model is None:
+                            viz_model = DiT3D_models[opt.model_type](
+                                pretrained=False,
+                                input_size=opt.voxel_size,
+                                num_classes=opt.num_classes,
+                                use_mae=True,
+                                mae_config_path=opt.mae_config_path,
+                            ).to(x.device)
+                            ckpt = torch.load(opt.embedding_viz_checkpoint, map_location='cpu')
+                            state = ckpt.get('model_state', ckpt)
+                            viz_model.load_state_dict(state, strict=False)
+                            viz_model.eval()
+                        if viz_diffusion is None:
+                            viz_diffusion = GaussianDiffusion(betas, opt.loss_type, opt.model_mean_type, opt.model_var_type)
 
-            visualize_pointcloud_batch('%s/epoch_%03d_x.png' % (outf_syn, epoch), x.transpose(1, 2), None,
-                                       None,
-                                       None)
+                        embedding_shape = new_embedding_chain(25, x.device).shape
+                        y_viz = new_y_chain(y, embedding_shape[0], opt.num_classes)
+                        embedding_gen = model.gen_samples(embedding_shape, x.device, y_viz, clip_denoised=False)
+                        embeddings_condition = embedding_gen.squeeze(-1)
+
+                        def viz_denoise(data, t, y_inner):
+                            return viz_model(data, t, y_inner, mae_embed=embeddings_condition)
+
+                        x_gen_eval = viz_diffusion.p_sample_loop(
+                            viz_denoise,
+                            shape=(embedding_gen.shape[0], opt.nc, opt.viz_points),
+                            device=x.device,
+                            y=y_viz,
+                            clip_denoised=False,
+                        )
+
+                        gen_stats = [x_gen_eval.mean(), x_gen_eval.std()]
+                        gen_eval_range = [x_gen_eval.min().item(), x_gen_eval.max().item()]
+
+                        logger.info('      [{:>3d}/{:>3d}]  '
+                                     'eval_gen_range: [{:>10.4f}, {:>10.4f}]     '
+                                     'eval_gen_stats: [mean={:>10.4f}, std={:>10.4f}]      '
+                            .format(
+                            epoch, opt.niter,
+                            *gen_eval_range, *gen_stats,
+                        ))
+
+                        visualize_pointcloud_batch('%s/epoch_%03d_samples_eval.png' % (outf_syn, epoch),
+                                                   x_gen_eval.transpose(1, 2), None, None,
+                                                   None)
+
+                        visualize_pointcloud_batch('%s/epoch_%03d_x.png' % (outf_syn, epoch), x.transpose(1, 2), None,
+                                                   None,
+                                                   None)
 
             logger.info('Generation: train')
             model.train()
@@ -930,6 +1001,12 @@ def parse_args():
                         help='path to torch file created by scripts/compute_mae_embeddings.py')
     parser.add_argument('--embedding_dim', type=int, default=384,
                         help='dimension of precomputed MaskedEmbedder vectors')
+    parser.add_argument('--embedding_backbone', type=str, default='dit3d',
+                        choices=['dit3d', 'dit'], help='backbone to use for embedding generation')
+    parser.add_argument('--embedding_viz_checkpoint', type=str, default='checkpoints/mae1000/best.pth',
+                        help='DiT3D checkpoint used for decoding embeddings during viz')
+    parser.add_argument('--viz_points', type=int, default=2048,
+                        help='number of points to generate when visualizing embeddings')
 
     parser.add_argument('--bs', type=int, default=16, help='input batch size')
     parser.add_argument('--workers', type=int, default=16, help='workers')

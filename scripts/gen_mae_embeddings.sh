@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Generate MaskedEmbedder embeddings for ShapeNet chair split.
 
-set -euo pipefail
+# set -euo pipefail
 
-python scripts/compute_mae_embeddings.py \
+python compute_mae_embeddings.py \
   --split train \
   --category chair \
   --batch_size 64 \

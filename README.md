@@ -94,11 +94,13 @@ During training, we train each model using each category for 10,000 epochs. We e
    ```
    point the script at whichever DiT checkpoint you want to borrow MAE weights from via `--checkpoint`.
 2. Train the embedding diffusion variant by passing the new CLI flags:
-   ```bash
-   python train.py --target_embeddings --embedding_data_path data/mae_embeddings/chair/train.pt \
-       --embedding_dim 384 --model_type DiT-S/4 --niter 1 --saveIter 1
-   ```
-   The embedding variant currently calls `EmbeddingDiT_S/4` under the hood and skips the voxel visualization steps.
+ ```bash
+  python train.py --target_embeddings --embedding_data_path data/mae_embeddings/chair/train.pt \
+      --embedding_dim 384 --model_type DiT-S/4 --niter 1 --saveIter 1
+  ```
+  Pass `--embedding_backbone dit` to switch from the DiT3D-based embedding head to the legacy DiT variant from `models/dit.py`.
+  The embedding variant currently calls `EmbeddingDiT_S/4` under the hood (unless `--embedding_backbone dit` is used) and skips the voxel visualization steps.
+  Add `--embedding_viz_checkpoint checkpoints/mae1000/best.pth` plus `--viz_points 2048` (or another point count) to have `train.py` periodically decode generated embeddings through the pretrained DiT3D backbone for visualization.
 
 ## Testing
 

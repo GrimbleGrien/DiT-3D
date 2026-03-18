@@ -295,13 +295,18 @@ class DiT(nn.Module):
         y = self.y_embedder(y, self.training)
 
         # --- optional MAE embedding ---
-        if self.use_mae and mae is not None:
-            mae_embed = self.mae_embedder(mae)       # [B, hidden_size]
+        if self.use_mae:
+            if mae_embed is not None:
+                mae_embed_cond = mae_embed
+            elif mae is not None:
+                mae_embed_cond = self.mae_embedder(mae)       # [B, hidden_size]
+            else:
+                mae_embed_cond = torch.zeros_like(t)          # fallback
         else:
-            mae_embed = torch.zeros_like(t)          # fallback
+            mae_embed_cond = torch.zeros_like(t)
 
         # --- conditioning ---
-        c = t + y + mae_embed
+        c = t + y + mae_embed_cond
 
         for block in self.blocks:
             x = block(x, c)                      
@@ -384,7 +389,7 @@ class EmbeddingDiT(nn.Module):
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
-    def forward(self, x, t, y, mae=None):
+    def forward(self, x, t, y, mae=None, mae_embed=None):
         x = x.squeeze(-1)
         x = self.embedding_proj(x).unsqueeze(1)
         x = x + self.pos_embed
