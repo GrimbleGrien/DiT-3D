@@ -9,8 +9,8 @@ class MAEEmbeddingDataset(torch.utils.data.Dataset):
     def __init__(self, path):
         payload = torch.load(path)
         self.embeddings = payload['embeddings']
-        self.cate_idx = torch.tensor(payload['cate_idx'], dtype=torch.long)
-        self.dataset_idx = torch.tensor(payload['idx'], dtype=torch.long)
+        self.cate_idx = torch.as_tensor(payload['cate_idx'], dtype=torch.long)
+        self.dataset_idx = torch.as_tensor(payload['idx'], dtype=torch.long)
         self.sid = payload.get('sid', [])
         self.mid = payload.get('mid', [])
 

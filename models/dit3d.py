@@ -275,7 +275,7 @@ class DiT(nn.Module):
         points = x0.reshape(shape=(x0.shape[0], c, x * p, y * p, z * p))
         return points
 
-    def forward(self, x, t, y, mae=None):
+    def forward(self, x, t, y, mae=None, mae_embed=None):
         """
         Forward pass of DiT.
         x: (N, C, P) tensor of spatial inputs (point clouds or latent representations of images)
@@ -295,15 +295,12 @@ class DiT(nn.Module):
         y = self.y_embedder(y, self.training)
 
         # --- optional MAE embedding ---
+        mae_embed_cond = torch.zeros_like(t)
         if self.use_mae:
             if mae_embed is not None:
                 mae_embed_cond = mae_embed
             elif mae is not None:
                 mae_embed_cond = self.mae_embedder(mae)       # [B, hidden_size]
-            else:
-                mae_embed_cond = torch.zeros_like(t)          # fallback
-        else:
-            mae_embed_cond = torch.zeros_like(t)
 
         # --- conditioning ---
         c = t + y + mae_embed_cond
@@ -397,10 +394,11 @@ class EmbeddingDiT(nn.Module):
         t = self.t_embedder(t)
         y = self.y_embedder(y, self.training)
 
-        if self.use_mae and mae is not None:
-            mae_embed = self.mae_embedder(mae)
-        else:
-            mae_embed = torch.zeros_like(t)
+        if mae_embed is None:
+            if self.use_mae and mae is not None:
+                mae_embed = self.mae_embedder(mae)
+            else:
+                mae_embed = torch.zeros_like(t)
 
         c = t + y + mae_embed
 

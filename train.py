@@ -559,6 +559,15 @@ def get_dataset(dataroot, npoints,category):
     return tr_dataset, te_dataset
 
 
+def build_train_dataset(opt):
+    if opt.target_embeddings:
+        assert opt.embedding_data_path, "Provide --embedding_data_path when target embeddings are requested"
+        return MAEEmbeddingDataset(opt.embedding_data_path)
+
+    train_dataset, _ = get_dataset(opt.dataroot, opt.npoints, opt.category)
+    return train_dataset
+
+
 def get_dataloader(opt, train_dataset, test_dataset=None):
 
     if opt.distribution_type == 'multi':
@@ -657,7 +666,7 @@ def train(gpu, opt, output_dir, noises_init):
 
 
     ''' data '''
-    train_dataset, _ = get_dataset(opt.dataroot, opt.npoints, opt.category)
+    train_dataset = build_train_dataset(opt)
     dataloader, _, train_sampler, _ = get_dataloader(opt, train_dataset, None)
 
 
@@ -873,7 +882,7 @@ def train(gpu, opt, output_dir, noises_init):
 
                         x_gen_eval = viz_diffusion.p_sample_loop(
                             viz_denoise,
-                            shape=(embedding_gen.shape[0], opt.nc, opt.viz_points),
+                            shape=(embedding_gen.shape[0], opt.viz_nc, opt.viz_points),
                             device=x.device,
                             y=y_viz,
                             clip_denoised=False,
@@ -952,6 +961,8 @@ def train(gpu, opt, output_dir, noises_init):
 
 def main():
     opt = parse_args()
+    if opt.viz_nc is None:
+        opt.viz_nc = opt.nc
     if opt.category == 'airplane':
         opt.beta_start = 1e-5
         opt.beta_end = 0.008
@@ -963,11 +974,9 @@ def main():
     ''' workaround '''
     if opt.target_embeddings:
         assert opt.embedding_data_path, "Provide --embedding_data_path when target embeddings are requested"
-        train_dataset = MAEEmbeddingDataset(opt.embedding_data_path)
         opt.npoints = 1
         opt.nc = opt.embedding_dim
-    else:
-        train_dataset, _ = get_dataset(opt.dataroot, opt.npoints, opt.category)
+    train_dataset = build_train_dataset(opt)
     noises_init = torch.randn(len(train_dataset), opt.npoints, opt.nc)
 
     # Use random port to avoid collision between parallel jobs
@@ -1070,6 +1079,7 @@ def parse_args():
     parser.add_argument('--diagIter', default=50000, type=int, help='unit: epoch')
     parser.add_argument('--vizIter', default=50000, type=int, help='unit: epoch')
     parser.add_argument('--print_freq', default=50, type=int, help='unit: iter')
+    parser.add_argument('--viz_nc', type=int, default=None, help='channels to use when visualizing generated samples (defaults to input channels)')
 
     parser.add_argument('--manualSeed', default=42, type=int, help='random seed')
 

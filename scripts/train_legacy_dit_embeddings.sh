@@ -15,6 +15,7 @@ python train.py \
   --bs 32 \
   --lr 1e-4 \
   --niter 1000 \
-  --saveIter 10 \
-  --vizIter 10 \
+  --saveIter 1 \
+  --vizIter 100 \
+  --viz_nc 3 \
   --use_tb
