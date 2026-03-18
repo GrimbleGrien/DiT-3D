@@ -4,6 +4,8 @@
 set -euo pipefail
 
 python train.py \
+  --dataroot ../../PSF/data/ShapeNetCore.v2.PC15k/ \
+  --category chair \
   --target_embeddings \
   --embedding_backbone dit \
   --embedding_data_path data/mae_embeddings/chair/train.pt \
