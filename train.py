@@ -1032,6 +1032,8 @@ def parse_args():
     parser.add_argument('--loss_type', default='mse')
     parser.add_argument('--model_mean_type', default='eps')
     parser.add_argument('--model_var_type', default='fixedsmall')
+    parser.add_argument('--class_dropout_prob', type=float, default=0.1,
+                        help='dropout probability for class embedding dropout')
 
     parser.add_argument('--use_mae', action='store_true', help='Enable MaskedEmbedder conditioning')
     parser.add_argument('--mae_config_path', type=str, default='configs/pretrainMAE.yaml', help='Path to MAE config file')
