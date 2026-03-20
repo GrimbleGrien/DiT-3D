@@ -10,12 +10,16 @@ python train.py \
   --embedding_backbone dit \
   --embedding_data_path data/mae_embeddings/chair/train.pt \
   --embedding_dim 384 \
+  --num_classes 1 \
   --experiment_name embedding_dit_legacy \
   --model_type DiT-S/4 \
   --bs 32 \
   --lr 1e-4 \
-  --niter 1000 \
-  --saveIter 1 \
-  --vizIter 100 \
+  --niter 10000 \
+  --saveIter 10 \
+  --vizIter 1000 \
   --viz_nc 3 \
-  --use_tb
+  --viz_points 2048 \
+  --use_tb \
+  --embedding_viz_checkpoint checkpoints/mae1000/best.pth \
+  --model checkpoints/embedding_dit_legacy/latest.pth

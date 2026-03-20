@@ -21,6 +21,9 @@ from models.embedding_dit_legacy import EmbeddingDiTLegacy_S_4
 
 from tensorboardX import SummaryWriter
 
+# Default number of ShapeNet categories used for multi-class runs.
+NUM_CLASSES_DEFAULT = 55
+
 
 '''
 some utils
@@ -857,6 +860,7 @@ def train(gpu, opt, output_dir, noises_init):
                     if not opt.embedding_viz_checkpoint:
                         logger.warning('Skipping embedding visualization because --embedding_viz_checkpoint is not set.')
                     else:
+                        skip_viz = False
                         if viz_model is None:
                             viz_model = DiT3D_models[opt.model_type](
                                 pretrained=False,
@@ -865,47 +869,65 @@ def train(gpu, opt, output_dir, noises_init):
                                 use_mae=True,
                                 mae_config_path=opt.mae_config_path,
                             ).to(x.device)
-                            ckpt = torch.load(opt.embedding_viz_checkpoint, map_location='cpu')
-                            state = ckpt.get('model_state', ckpt)
-                            viz_model.load_state_dict(state, strict=False)
-                            viz_model.eval()
-                        if viz_diffusion is None:
+                            try:
+                                ckpt = torch.load(opt.embedding_viz_checkpoint, map_location='cpu')
+                                state = ckpt.get('model_state', ckpt)
+                                viz_model.load_state_dict(state, strict=False)
+                                viz_model.eval()
+                                logger.info(f'Loaded embedding viz checkpoint from {opt.embedding_viz_checkpoint}')
+                            except FileNotFoundError as e:
+                                logger.error(f'Embedding viz checkpoint not found: {opt.embedding_viz_checkpoint} ({e}). Skipping viz.')
+                                viz_model = None
+                                skip_viz = True
+                            except RuntimeError as e:
+                                logger.error(f'Failed to load embedding viz checkpoint (shape mismatch?): {e}. Skipping viz.')
+                                viz_model = None
+                                skip_viz = True
+                        if viz_diffusion is None and not skip_viz:
                             viz_diffusion = GaussianDiffusion(betas, opt.loss_type, opt.model_mean_type, opt.model_var_type)
 
-                        embedding_shape = new_embedding_chain(25, x.device).shape
-                        y_viz = new_y_chain(y, embedding_shape[0], opt.num_classes)
-                        embedding_gen = model.gen_samples(embedding_shape, x.device, y_viz, clip_denoised=False)
-                        embeddings_condition = embedding_gen.squeeze(-1)
+                        if skip_viz:
+                            pass
+                        else:
+                            embedding_shape = new_embedding_chain(25, x.device).shape
+                            if y.numel() > 0:
+                                repeats = (embedding_shape[0] + y.shape[0] - 1) // y.shape[0]
+                                y_viz = y.repeat(repeats)[:embedding_shape[0]]
+                            else:
+                                y_viz = new_y_chain(y, embedding_shape[0], opt.num_classes)
 
-                        def viz_denoise(data, t, y_inner):
-                            return viz_model(data, t, y_inner, mae_embed=embeddings_condition)
+                            embedding_gen = model.gen_samples(embedding_shape, x.device, y_viz, clip_denoised=False)
+                            embeddings_condition = embedding_gen.squeeze(-1)
 
-                        x_gen_eval = viz_diffusion.p_sample_loop(
-                            viz_denoise,
-                            shape=(embedding_gen.shape[0], opt.viz_nc, opt.viz_points),
-                            device=x.device,
-                            y=y_viz,
-                            clip_denoised=False,
-                        )
+                            def viz_denoise(data, t, y_inner):
+                                return viz_model(data, t, y_inner, mae_embed=embeddings_condition)
 
-                        gen_stats = [x_gen_eval.mean(), x_gen_eval.std()]
-                        gen_eval_range = [x_gen_eval.min().item(), x_gen_eval.max().item()]
+                            x_gen_eval = viz_diffusion.p_sample_loop(
+                                viz_denoise,
+                                shape=(embedding_gen.shape[0], opt.viz_nc, opt.viz_points),
+                                device=x.device,
+                                y=y_viz,
+                                clip_denoised=False,
+                            )
 
-                        logger.info('      [{:>3d}/{:>3d}]  '
-                                     'eval_gen_range: [{:>10.4f}, {:>10.4f}]     '
-                                     'eval_gen_stats: [mean={:>10.4f}, std={:>10.4f}]      '
-                            .format(
-                            epoch, opt.niter,
-                            *gen_eval_range, *gen_stats,
-                        ))
+                            gen_stats = [x_gen_eval.mean(), x_gen_eval.std()]
+                            gen_eval_range = [x_gen_eval.min().item(), x_gen_eval.max().item()]
 
-                        visualize_pointcloud_batch('%s/epoch_%03d_samples_eval.png' % (outf_syn, epoch),
-                                                   x_gen_eval.transpose(1, 2), None, None,
-                                                   None)
+                            logger.info('      [{:>3d}/{:>3d}]  '
+                                         'eval_gen_range: [{:>10.4f}, {:>10.4f}]     '
+                                         'eval_gen_stats: [mean={:>10.4f}, std={:>10.4f}]      '
+                                .format(
+                                epoch, opt.niter,
+                                *gen_eval_range, *gen_stats,
+                            ))
 
-                        visualize_pointcloud_batch('%s/epoch_%03d_x.png' % (outf_syn, epoch), x.transpose(1, 2), None,
-                                                   None,
-                                                   None)
+                            visualize_pointcloud_batch('%s/epoch_%03d_samples_eval.png' % (outf_syn, epoch),
+                                                       x_gen_eval.transpose(1, 2), None, None,
+                                                       None)
+
+                            visualize_pointcloud_batch('%s/epoch_%03d_x.png' % (outf_syn, epoch), x.transpose(1, 2), None,
+                                                       None,
+                                                       None)
 
             logger.info('Generation: train')
             model.train()
@@ -968,6 +990,12 @@ def main():
         opt.beta_end = 0.008
         opt.schedule_type = 'warm0.1'
 
+    # Auto-adjust num_classes for single/multi category runs when user left default.
+    category_list = [c for c in opt.category.split(',') if c]
+    if 'all' not in category_list and opt.num_classes == NUM_CLASSES_DEFAULT:
+        opt.num_classes = len(category_list)
+        print(f"[config] num_classes auto-set to {opt.num_classes} based on categories: {category_list}")
+
     output_dir = get_output_dir(opt.model_dir, opt.experiment_name)
     copy_source(__file__, output_dir)
 
@@ -1003,7 +1031,7 @@ def parse_args():
     # Data params
     parser.add_argument('--dataroot', default='ShapeNetCore.v2.PC15k/')
     parser.add_argument('--category', default='chair')
-    parser.add_argument('--num_classes', type=int, default=55)
+    parser.add_argument('--num_classes', type=int, default=NUM_CLASSES_DEFAULT)
     parser.add_argument('--target_embeddings', action='store_true',
                         help='train on extracted MaskedEmbedder vectors instead of raw point clouds')
     parser.add_argument('--embedding_data_path', type=str, default='',
