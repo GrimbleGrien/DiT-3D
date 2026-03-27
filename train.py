@@ -412,6 +412,7 @@ class Model(nn.Module):
     def __init__(self, args, betas, loss_type: str, model_mean_type: str, model_var_type:str):
         super(Model, self).__init__()
         self.diffusion = GaussianDiffusion(betas, loss_type, model_mean_type, model_var_type)
+        self.use_mae = args.use_mae
 
         if args.window_size > 0:
             self.model = DiT3D_models_WindAttn[args.model_type](pretrained=args.use_pretrained, 
@@ -461,7 +462,7 @@ class Model(nn.Module):
             noises[t!=0] = torch.randn((t!=0).sum(), *noises.shape[1:]).to(noises)
 
         mae = None
-        if self.model.use_mae:
+        if self.use_mae:
             pts = data.transpose(1, 2)  # [B, N, 3]
             n_pts = pts.shape[1]
             target_pts = min(mae_points or n_pts, n_pts)
