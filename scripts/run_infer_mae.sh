@@ -1,0 +1,14 @@
+python scripts/infer_mae_sample.py \
+    --checkpoint checkpoints/mae1000/latest.pth \
+    --dataroot ../../PSF/data/ShapeNetCore.v2.PC15k/ \
+    --category chair \
+    --voxel_size 32 \
+    --npoints 2048 \
+    --mae_config_path configs/pretrainMAE.yaml \
+    --mae_points 1024 \
+    --mae_mask_ratio 0.6 \
+    --device cuda:0 \
+    --batch_size 1 \
+    --output_pc outputs/mae_cond_sample.npy \
+    --seed 42 \
+    --use_ema

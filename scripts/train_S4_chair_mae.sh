@@ -1,4 +1,4 @@
-python train.py --gpu 0 \
+ython train.py --gpu 0 \
     --dataroot ../../PSF/data/ShapeNetCore.v2.PC15k/ \
     --category chair \
     --experiment_name 'mae1000' \
@@ -11,4 +11,6 @@ python train.py --gpu 0 \
     --saveIter 1 \
     --use_mae \
     --mae_config_path 'configs/pretrainMAE.yaml' \
+    --mae_points 1024 \
+    --mae_mask_ratio 0.6 \
     --vizIter 100 \
