@@ -11,6 +11,4 @@ python train.py --gpu 0 \
     --saveIter 1 \
     --use_mae \
     --mae_config_path 'configs/pretrainMAE.yaml' \
-    --mae_points 1024 \
-    --mae_mask_ratio 0.6 \
     --vizIter 100 \
