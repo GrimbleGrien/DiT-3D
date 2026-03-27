@@ -18,6 +18,7 @@ from models.dit3d import DiT3D_models
 from models.dit3d_window_attn import DiT3D_models_WindAttn
 
 from tensorboardX import SummaryWriter
+from utils.config import cfg_from_yaml_file
 
 
 '''
@@ -442,38 +443,64 @@ class Model(nn.Module):
         }
 
 
-    def _denoise(self, data, t, y):
+    def _denoise(self, data, t, y, mae=None):
         B, D,N= data.shape
         assert data.dtype == torch.float
         assert t.shape == torch.Size([B]) and t.dtype == torch.int64
 
-        out = self.model(data, t, y)
+        out = self.model(data, t, y, mae=mae)
 
         assert out.shape == torch.Size([B, D, N])
         return out
 
-    def get_loss_iter(self, data, noises=None, y=None):
+    def get_loss_iter(self, data, noises=None, y=None, mae_points=None, mae_mask_ratio=None):
         B, D, N = data.shape                           # [16, 3, 2048]
         t = torch.randint(0, self.diffusion.num_timesteps, size=(B,), device=data.device)
 
         if noises is not None:
             noises[t!=0] = torch.randn((t!=0).sum(), *noises.shape[1:]).to(noises)
 
+        mae = None
+        if self.model.use_mae:
+            # data: [B, C, N] -> pts: [B, N, C]
+            pts = data.transpose(1, 2)
+            n_pts = pts.shape[1]
+            target_pts = min(mae_points or n_pts, n_pts)
+            if target_pts < n_pts:
+                idx = torch.randperm(n_pts, device=pts.device)[:target_pts]
+                idx = idx.unsqueeze(0).expand(pts.size(0), -1)
+                pts = torch.gather(pts, 1, idx.unsqueeze(-1).expand(-1, -1, 3))
+            mask_ratio = mae_mask_ratio if mae_mask_ratio is not None else 0.6
+            if mask_ratio > 0:
+                keep = torch.rand(pts.shape[:2], device=pts.device) > mask_ratio
+                pts = pts * keep.unsqueeze(-1)
+            mae = pts
+
+        def denoise_fn(data_in, t_in, y_in):
+            return self._denoise(data_in, t_in, y_in, mae=mae)
+
         losses = self.diffusion.p_losses(
-            denoise_fn=self._denoise, data_start=data, t=t, noise=noises, y=y)
+            denoise_fn=denoise_fn, data_start=data, t=t, noise=noises, y=y)
         assert losses.shape == t.shape == torch.Size([B])
         return losses
 
     def gen_samples(self, shape, device, y, noise_fn=torch.randn,
                     clip_denoised=True,
-                    keep_running=False):
-        return self.diffusion.p_sample_loop(self._denoise, shape=shape, device=device, y=y, noise_fn=noise_fn,
+                    keep_running=False,
+                    mae=None):
+        def denoise_fn(data_in, t_in, y_in):
+            return self._denoise(data_in, t_in, y_in, mae=mae)
+
+        return self.diffusion.p_sample_loop(denoise_fn, shape=shape, device=device, y=y, noise_fn=noise_fn,
                                             clip_denoised=clip_denoised,
                                             keep_running=keep_running)
 
     def gen_sample_traj(self, shape, device, y, freq, noise_fn=torch.randn,
-                    clip_denoised=True,keep_running=False):
-        return self.diffusion.p_sample_loop_trajectory(self._denoise, shape=shape, device=device, y=y, noise_fn=noise_fn, freq=freq,
+                    clip_denoised=True,keep_running=False, mae=None):
+        def denoise_fn(data_in, t_in, y_in):
+            return self._denoise(data_in, t_in, y_in, mae=mae)
+
+        return self.diffusion.p_sample_loop_trajectory(denoise_fn, shape=shape, device=device, y=y, noise_fn=noise_fn, freq=freq,
                                                        clip_denoised=clip_denoised,
                                                        keep_running=keep_running)
 
@@ -508,6 +535,22 @@ def get_betas(schedule_type, b_start, b_end, time_num):
     else:
         raise NotImplementedError(schedule_type)
     return betas
+
+
+def get_default_mae_mask_ratio(cfg_path, fallback=0.6):
+    """
+    Read mask_ratio from MAE config; fall back gracefully if missing.
+    """
+    try:
+        cfg = cfg_from_yaml_file(cfg_path)
+        ratio = None
+        if hasattr(cfg, 'model') and hasattr(cfg.model, 'mask_ratio'):
+            ratio = cfg.model.mask_ratio
+        elif isinstance(cfg, dict):
+            ratio = cfg.get('model', {}).get('mask_ratio', None)
+        return fallback if ratio is None else float(ratio)
+    except Exception:
+        return fallback
 
 
 def get_dataset(dataroot, npoints,category):
@@ -721,7 +764,13 @@ def train(gpu, opt, output_dir, noises_init):
                 noises_batch = noises_batch.cuda()
                 y = y.cuda()
 
-            loss = model.get_loss_iter(x, noises_batch, y).mean()
+            loss = model.get_loss_iter(
+                x,
+                noises_batch,
+                y,
+                mae_points=opt.mae_points if opt.use_mae else None,
+                mae_mask_ratio=opt.mae_mask_ratio if opt.use_mae else None
+            ).mean()
 
             optimizer.zero_grad()
             loss.backward()
@@ -864,6 +913,8 @@ def train(gpu, opt, output_dir, noises_init):
 
 def main():
     opt = parse_args()
+    if opt.mae_mask_ratio is None:
+        opt.mae_mask_ratio = get_default_mae_mask_ratio(opt.mae_config_path)
     if opt.category == 'airplane':
         opt.beta_start = 1e-5
         opt.beta_end = 0.008
@@ -929,6 +980,8 @@ def parse_args():
 
     parser.add_argument('--use_mae', action='store_true', help='Enable MaskedEmbedder conditioning')
     parser.add_argument('--mae_config_path', type=str, default='configs/pretrainMAE.yaml', help='Path to MAE config file')
+    parser.add_argument('--mae_points', type=int, default=1024, help='Number of points fed to MaskedEmbedder')
+    parser.add_argument('--mae_mask_ratio', type=float, default=None, help='Mask ratio for MAE; defaults to MAE config mask_ratio')
 
     parser.add_argument('--lr', type=float, default=2e-4, help='learning rate for E, default=0.0002')
     parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
