@@ -13,5 +13,6 @@ python train.py --gpu 0 \
     --mae_config_path 'configs/pretrainMAE.yaml' \
     --mae_points 1024 \
     --mae_mask_ratio 0.6 \
+    --mae_drop_prob 0.1 \
     --vizIter 100 \
-    # --model 'checkpoints/mae1000/latest.pth'
+    # --model 'checkpoints/mae500/latest.pth'

@@ -454,7 +454,24 @@ class Model(nn.Module):
         assert out.shape == torch.Size([B, D, N])
         return out
 
-    def get_loss_iter(self, data, noises=None, y=None, mae_points=None, mae_mask_ratio=None):
+    @staticmethod
+    def build_mae_input(data, mae_points=None, mae_mask_ratio=0.6):
+        """
+        data: [B, C, N] -> returns [B, M, 3] masked point cloud for MAE conditioning
+        """
+        pts = data.transpose(1, 2)  # [B, N, 3]
+        n_pts = pts.shape[1]
+        target_pts = min(mae_points or n_pts, n_pts)
+        if target_pts < n_pts:
+            idx = torch.randperm(n_pts, device=pts.device)[:target_pts]
+            idx = idx.unsqueeze(0).expand(pts.size(0), -1)
+            pts = torch.gather(pts, 1, idx.unsqueeze(-1).expand(-1, -1, 3))
+        if mae_mask_ratio > 0:
+            keep = torch.rand(pts.shape[:2], device=pts.device) > mae_mask_ratio
+            pts = pts * keep.unsqueeze(-1)
+        return pts
+
+    def get_loss_iter(self, data, noises=None, y=None, mae_points=None, mae_mask_ratio=None, mae_drop_prob=0.0):
         B, D, N = data.shape                           # [16, 3, 2048]
         t = torch.randint(0, self.diffusion.num_timesteps, size=(B,), device=data.device)
 
@@ -463,18 +480,11 @@ class Model(nn.Module):
 
         mae = None
         if self.use_mae:
-            pts = data.transpose(1, 2)  # [B, N, 3]
-            n_pts = pts.shape[1]
-            target_pts = min(mae_points or n_pts, n_pts)
-            if target_pts < n_pts:
-                idx = torch.randperm(n_pts, device=pts.device)[:target_pts]
-                idx = idx.unsqueeze(0).expand(pts.size(0), -1)
-                pts = torch.gather(pts, 1, idx.unsqueeze(-1).expand(-1, -1, 3))
-            mask_ratio = mae_mask_ratio if mae_mask_ratio is not None else 0.6
-            if mask_ratio > 0:
-                keep = torch.rand(pts.shape[:2], device=pts.device) > mask_ratio
-                pts = pts * keep.unsqueeze(-1)
-            mae = pts
+            if mae_drop_prob > 0 and torch.rand(1, device=data.device).item() < mae_drop_prob:
+                mae = None
+            else:
+                mask_ratio = mae_mask_ratio if mae_mask_ratio is not None else 0.6
+                mae = self.build_mae_input(data, mae_points=mae_points, mae_mask_ratio=mask_ratio)
 
         def denoise_fn(data_in, t_in, y_in):
             return self._denoise(data_in, t_in, y_in, mae=mae)
@@ -769,7 +779,8 @@ def train(gpu, opt, output_dir, noises_init):
                 noises_batch,
                 y,
                 mae_points=opt.mae_points if opt.use_mae else None,
-                mae_mask_ratio=opt.mae_mask_ratio if opt.use_mae else None
+                mae_mask_ratio=opt.mae_mask_ratio if opt.use_mae else None,
+                mae_drop_prob=opt.mae_drop_prob if opt.use_mae else 0.0
             ).mean()
 
             optimizer.zero_grad()
@@ -830,9 +841,30 @@ def train(gpu, opt, output_dir, noises_init):
 
             model.eval()
             with torch.no_grad():
-
-                x_gen_eval = model.gen_samples(new_x_chain(x, 25).shape, x.device, new_y_chain(y,25,opt.num_classes), clip_denoised=False)
-                x_gen_list = model.gen_sample_traj(new_x_chain(x, 1).shape, x.device, new_y_chain(y,1,opt.num_classes), freq=40, clip_denoised=False)
+                if opt.use_mae:
+                    mae_eval = model.build_mae_input(
+                        x,
+                        mae_points=opt.mae_points,
+                        mae_mask_ratio=opt.mae_mask_ratio
+                    )
+                    y_eval = y
+                    x_gen_eval = model.gen_samples(
+                        new_x_chain(x, 25).shape, x.device, y_eval,
+                        clip_denoised=False, mae=mae_eval
+                    )
+                    x_gen_list = model.gen_sample_traj(
+                        new_x_chain(x, 1).shape, x.device, y_eval,
+                        freq=40, clip_denoised=False, mae=mae_eval
+                    )
+                else:
+                    x_gen_eval = model.gen_samples(
+                        new_x_chain(x, 25).shape, x.device,
+                        new_y_chain(y,25,opt.num_classes), clip_denoised=False
+                    )
+                    x_gen_list = model.gen_sample_traj(
+                        new_x_chain(x, 1).shape, x.device,
+                        new_y_chain(y,1,opt.num_classes), freq=40, clip_denoised=False
+                    )
                 x_gen_all = torch.cat(x_gen_list, dim=0)
 
                 gen_stats = [x_gen_eval.mean(), x_gen_eval.std()]
@@ -982,6 +1014,7 @@ def parse_args():
     parser.add_argument('--mae_config_path', type=str, default='configs/pretrainMAE.yaml', help='Path to MAE config file')
     parser.add_argument('--mae_points', type=int, default=1024, help='Number of points fed to MaskedEmbedder')
     parser.add_argument('--mae_mask_ratio', type=float, default=None, help='Mask ratio for MAE; defaults to MAE config mask_ratio')
+    parser.add_argument('--mae_drop_prob', type=float, default=0.0, help='Probability to drop MAE conditioning during training')
 
     parser.add_argument('--lr', type=float, default=2e-4, help='learning rate for E, default=0.0002')
     parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
