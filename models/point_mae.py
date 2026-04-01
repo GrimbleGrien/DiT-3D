@@ -50,7 +50,7 @@ class Group(nn.Module):  # FPS + KNN
         self.group_size = group_size
         self.knn = KNN(k=self.group_size, transpose_mode=True)
 
-    def forward(self, xyz):
+    def forward(self, xyz, centers=None):
         '''
             input: B N 3
             ---------------------------
@@ -59,7 +59,10 @@ class Group(nn.Module):  # FPS + KNN
         '''
         batch_size, num_points, _ = xyz.shape
         # fps the centers out
-        center = fps(xyz, self.num_group) # B G 3
+        if centers is None:
+            center = fps(xyz, self.num_group) # B G 3
+        else:
+            center = centers
         # knn to get the neighborhood
         _, idx = self.knn(xyz, center) # B G M
         assert idx.size(1) == self.num_group
@@ -201,6 +204,8 @@ class MaskedEmbedder(nn.Module):
             nn.Linear(384, 256)
             )
 
+        self.recon_head = nn.Linear(self.trans_dim, 3)
+
         self.final_proj = nn.Linear(self.trans_dim, self.hidden_size)
 
     def _init_weights(self, m):
@@ -216,9 +221,8 @@ class MaskedEmbedder(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
-    def forward(self, pts):
-
-        neighborhood, center = self.group_divider(pts)
+    def encode_tokens(self, pts, centers=None):
+        neighborhood, center = self.group_divider(pts, centers=centers)
         group_input_tokens = self.encoder(neighborhood)  # B G N
         batch_size, seq_len, C = group_input_tokens.size()
 
@@ -229,6 +233,10 @@ class MaskedEmbedder(nn.Module):
         # transformer
         x = self.blocks(x, pos)
         x = self.norm(x)
+        return x, center
+
+    def forward(self, pts):
+        x, _ = self.encode_tokens(pts)
         x_feat = x[:, 0:].max(1)[0]        # [B, trans_dim]
         #x_feat = x[:, 0:].max(1)[0] + x[:, 0:].mean(1)
         #x_feat = torch.cat((x[:, 0:].max(1)[0],x[:, 0:].mean(1)), dim=1)
@@ -236,6 +244,15 @@ class MaskedEmbedder(nn.Module):
         x_feat = self.final_proj(x_feat)   # [B, hidden_size]
         return x_feat
         #ret = self.cls_head_finetune(concat_f)
+
+    def reconstruct_centers(self, pts, centers=None):
+        x, center = self.encode_tokens(pts, centers=centers)
+        pred_center = self.recon_head(x)
+        return pred_center, center
+
+    def get_centers(self, pts):
+        _, center = self.group_divider(pts, centers=None)
+        return center
 
 if __name__ == '__main__':
     class Args():

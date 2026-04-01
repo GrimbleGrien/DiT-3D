@@ -1,5 +1,6 @@
 import torch.multiprocessing as mp
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.data
 
@@ -455,7 +456,7 @@ class Model(nn.Module):
         return out
 
     @staticmethod
-    def build_mae_input(data, mae_points=None, mae_mask_ratio=0.6):
+    def build_mae_input(data, mae_points=None, mae_mask_ratio=0.6, min_keep=None):
         """
         data: [B, C, N] -> returns [B, M, 3] masked point cloud for MAE conditioning
         """
@@ -467,11 +468,32 @@ class Model(nn.Module):
             idx = idx.unsqueeze(0).expand(pts.size(0), -1)
             pts = torch.gather(pts, 1, idx.unsqueeze(-1).expand(-1, -1, 3))
         if mae_mask_ratio > 0:
-            keep = torch.rand(pts.shape[:2], device=pts.device) > mae_mask_ratio
-            pts = pts * keep.unsqueeze(-1)
+            keep_count = int(max(1, round(target_pts * (1.0 - mae_mask_ratio))))
+            if min_keep is not None:
+                keep_count = max(keep_count, int(min_keep))
+            if keep_count < target_pts:
+                keep_idx = torch.randperm(target_pts, device=pts.device)[:keep_count]
+                keep_idx = keep_idx.unsqueeze(0).expand(pts.size(0), -1)
+                pts = torch.gather(pts, 1, keep_idx.unsqueeze(-1).expand(-1, -1, 3))
         return pts
 
-    def get_loss_iter(self, data, noises=None, y=None, mae_points=None, mae_mask_ratio=None, mae_drop_prob=0.0):
+    def _get_mae_embedder(self):
+        model = self.model
+        if isinstance(model, (nn.DataParallel, nn.parallel.DistributedDataParallel)):
+            model = model.module
+        return model.mae_embedder
+
+    def set_mae_only_trainable(self, mae_only: bool):
+        model = self.model
+        if isinstance(model, (nn.DataParallel, nn.parallel.DistributedDataParallel)):
+            model = model.module
+        for p in model.parameters():
+            p.requires_grad = not mae_only
+        if mae_only:
+            for p in model.mae_embedder.parameters():
+                p.requires_grad = True
+
+    def get_loss_iter(self, data, noises=None, y=None, mae_points=None, mae_mask_ratio=None, mae_drop_prob=0.0, return_mae_loss=False):
         B, D, N = data.shape                           # [16, 3, 2048]
         t = torch.randint(0, self.diffusion.num_timesteps, size=(B,), device=data.device)
 
@@ -479,12 +501,21 @@ class Model(nn.Module):
             noises[t!=0] = torch.randn((t!=0).sum(), *noises.shape[1:]).to(noises)
 
         mae = None
+        mae_loss = data.new_zeros(())
         if self.use_mae:
             if mae_drop_prob > 0 and torch.rand(1, device=data.device).item() < mae_drop_prob:
                 mae = None
             else:
                 mask_ratio = mae_mask_ratio if mae_mask_ratio is not None else 0.6
-                mae = self.build_mae_input(data, mae_points=mae_points, mae_mask_ratio=mask_ratio)
+                full_pts = data.transpose(1, 2)
+                mae_embedder = self._get_mae_embedder()
+                min_keep = getattr(mae_embedder, "num_group", None)
+                mae = self.build_mae_input(
+                    data, mae_points=mae_points, mae_mask_ratio=mask_ratio, min_keep=min_keep
+                )
+                target_centers = mae_embedder.get_centers(full_pts)
+                pred_centers, _ = mae_embedder.reconstruct_centers(mae, centers=target_centers)
+                mae_loss = F.mse_loss(pred_centers, target_centers)
 
         def denoise_fn(data_in, t_in, y_in):
             return self._denoise(data_in, t_in, y_in, mae=mae)
@@ -492,6 +523,8 @@ class Model(nn.Module):
         losses = self.diffusion.p_losses(
             denoise_fn=denoise_fn, data_start=data, t=t, noise=noises, y=y)
         assert losses.shape == t.shape == torch.Size([B])
+        if return_mae_loss:
+            return losses, mae_loss
         return losses
 
     def gen_samples(self, shape, device, y, noise_fn=torch.randn,
@@ -752,6 +785,22 @@ def train(gpu, opt, output_dir, noises_init):
 
     for epoch in range(start_epoch, opt.niter):
 
+        use_mae_now = opt.use_mae and (epoch >= opt.mae_start_epoch)
+        if use_mae_now:
+            if opt.mae_warmup_epochs > 0:
+                warmup_progress = min(1.0, float(epoch - opt.mae_start_epoch + 1) / float(opt.mae_warmup_epochs))
+            else:
+                warmup_progress = 1.0
+            mae_lambda = opt.mae_lambda * warmup_progress
+            mae_drop_prob = opt.mae_drop_prob
+            mae_only = opt.mae_freeze_dit and (epoch - opt.mae_start_epoch) < opt.mae_warmup_epochs
+        else:
+            mae_lambda = 0.0
+            mae_drop_prob = 0.0
+            mae_only = False
+
+        model.set_mae_only_trainable(mae_only)
+
         if opt.distribution_type == 'multi':
             train_sampler.set_epoch(epoch)
 
@@ -774,14 +823,16 @@ def train(gpu, opt, output_dir, noises_init):
                 noises_batch = noises_batch.cuda()
                 y = y.cuda()
 
-            loss = model.get_loss_iter(
+            losses, mae_loss = model.get_loss_iter(
                 x,
                 noises_batch,
                 y,
-                mae_points=opt.mae_points if opt.use_mae else None,
-                mae_mask_ratio=opt.mae_mask_ratio if opt.use_mae else None,
-                mae_drop_prob=opt.mae_drop_prob if opt.use_mae else 0.0
-            ).mean()
+                mae_points=opt.mae_points if use_mae_now else None,
+                mae_mask_ratio=opt.mae_mask_ratio if use_mae_now else None,
+                mae_drop_prob=mae_drop_prob if use_mae_now else 0.0,
+                return_mae_loss=True
+            )
+            loss = losses.mean() + mae_lambda * mae_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -799,6 +850,9 @@ def train(gpu, opt, output_dir, noises_init):
                 if opt.use_tb:
                     tb_writer.add_scalar('train_loss', loss.item(), global_step)
                     tb_writer.add_scalar('train_lr', optimizer.param_groups[0]['lr'], global_step)
+                    if use_mae_now:
+                        tb_writer.add_scalar('mae_loss', mae_loss.item(), global_step)
+                        tb_writer.add_scalar('mae_lambda', mae_lambda, global_step)
 
             if i % opt.print_freq == 0 and should_diag:
 
@@ -841,7 +895,7 @@ def train(gpu, opt, output_dir, noises_init):
 
             model.eval()
             with torch.no_grad():
-                if opt.use_mae:
+                if use_mae_now:
                     mae_eval = model.build_mae_input(
                         x,
                         mae_points=opt.mae_points,
@@ -1015,6 +1069,10 @@ def parse_args():
     parser.add_argument('--mae_points', type=int, default=1024, help='Number of points fed to MaskedEmbedder')
     parser.add_argument('--mae_mask_ratio', type=float, default=None, help='Mask ratio for MAE; defaults to MAE config mask_ratio')
     parser.add_argument('--mae_drop_prob', type=float, default=0.0, help='Probability to drop MAE conditioning during training')
+    parser.add_argument('--mae_lambda', type=float, default=0.1, help='Weight for MAE reconstruction loss')
+    parser.add_argument('--mae_start_epoch', type=int, default=0, help='Epoch to start MAE conditioning')
+    parser.add_argument('--mae_warmup_epochs', type=int, default=0, help='Warmup epochs for MAE (ramps lambda, optionally freeze DiT)')
+    parser.add_argument('--mae_freeze_dit', action='store_true', help='Freeze DiT3D during MAE warmup')
 
     parser.add_argument('--lr', type=float, default=2e-4, help='learning rate for E, default=0.0002')
     parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')

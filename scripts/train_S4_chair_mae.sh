@@ -14,5 +14,9 @@ python train.py --gpu 0 \
     --mae_points 1024 \
     --mae_mask_ratio 0.6 \
     --mae_drop_prob 0.1 \
+    --mae_lambda 0.1 \
+    --mae_start_epoch 100 \
+    --mae_warmup_epochs 50 \
+    --mae_freeze_dit \
     --vizIter 100 \
     # --model 'checkpoints/mae500/latest.pth'
