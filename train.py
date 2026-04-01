@@ -777,6 +777,17 @@ def train(gpu, opt, output_dir, noises_init):
     def new_y_chain(y, num_chain, num_classes):
         return torch.randint(low=0,high=num_classes,size=(num_chain,),device=y.device)
 
+    def sample_eval_cond(x, y, num_samples):
+        """
+        Sample a conditioning batch of size num_samples from the current batch.
+        If num_samples > batch size, sample with replacement.
+        """
+        if x.shape[0] >= num_samples:
+            idx = torch.randperm(x.shape[0], device=x.device)[:num_samples]
+        else:
+            idx = torch.randint(0, x.shape[0], (num_samples,), device=x.device)
+        return x[idx], y[idx]
+
     # Prepare models for training:
     if opt.use_ema:
         update_ema(ema, model, decay=0)  # Ensure EMA is initialized with synced weights
@@ -896,19 +907,26 @@ def train(gpu, opt, output_dir, noises_init):
             model.eval()
             with torch.no_grad():
                 if use_mae_now:
+                    eval_bs = 25
+                    x_cond, y_eval = sample_eval_cond(x, y, eval_bs)
                     mae_eval = model.build_mae_input(
-                        x,
+                        x_cond,
                         mae_points=opt.mae_points,
                         mae_mask_ratio=opt.mae_mask_ratio
                     )
-                    y_eval = y
                     x_gen_eval = model.gen_samples(
-                        new_x_chain(x, 25).shape, x.device, y_eval,
+                        new_x_chain(x_cond, eval_bs).shape, x.device, y_eval,
                         clip_denoised=False, mae=mae_eval
                     )
+                    x_cond_1, y_eval_1 = sample_eval_cond(x, y, 1)
+                    mae_eval_1 = model.build_mae_input(
+                        x_cond_1,
+                        mae_points=opt.mae_points,
+                        mae_mask_ratio=opt.mae_mask_ratio
+                    )
                     x_gen_list = model.gen_sample_traj(
-                        new_x_chain(x, 1).shape, x.device, y_eval,
-                        freq=40, clip_denoised=False, mae=mae_eval
+                        new_x_chain(x_cond_1, 1).shape, x.device, y_eval_1,
+                        freq=40, clip_denoised=False, mae=mae_eval_1
                     )
                 else:
                     x_gen_eval = model.gen_samples(
