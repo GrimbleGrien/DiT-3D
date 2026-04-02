@@ -1,0 +1,25 @@
+python scripts/sample_embed_diffusion.py \
+    --checkpoint checkpoints/embed_diffusion/best.pth \
+    --num_samples 50 \
+    --output_path outputs/embed_diffusion/samples.npy \
+    --device cuda:0 \
+    --seed 42
+
+python scripts/infer_from_embeddings.py \
+    --checkpoint checkpoints/jmae500/best.pth \
+    --embeddings outputs/embed_diffusion/samples.npy \
+    --output_dir outputs/pc_from_embeds \
+    --device cuda:0 \
+    --batch_size 8 \
+    --npoints 2048 \
+    --voxel_size 32 \
+    --mae_config_path configs/pretrainMAE.yaml \
+    --model_type DiT-S/4 \
+    --num_classes 55 \
+    --schedule_type linear \
+    --beta_start 0.0001 \
+    --beta_end 0.02 \
+    --time_num 1000 \
+    --use_ema \
+    --seed 42 \
+    --class_idx 0
