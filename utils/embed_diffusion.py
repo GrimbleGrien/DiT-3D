@@ -59,6 +59,40 @@ class DenoiserMLP(nn.Module):
         return self.net(h)
 
 
+class DenoiserTransformer(nn.Module):
+    def __init__(self, embed_dim, token_dim=64, depth=6, num_heads=8, time_dim=256, mlp_ratio=4.0, dropout=0.0):
+        super().__init__()
+        if embed_dim % token_dim != 0:
+            raise ValueError(f"embed_dim ({embed_dim}) must be divisible by token_dim ({token_dim})")
+        self.embed_dim = embed_dim
+        self.token_dim = token_dim
+        self.num_tokens = embed_dim // token_dim
+        self.time_embed = SinusoidalTimeEmbedding(time_dim)
+        self.time_proj = nn.Linear(time_dim, token_dim)
+        self.token_proj = nn.Linear(token_dim, token_dim)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=token_dim,
+            nhead=num_heads,
+            dim_feedforward=int(token_dim * mlp_ratio),
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=depth)
+        self.out_proj = nn.Linear(token_dim, token_dim)
+
+    def forward(self, x, t):
+        # x: [B, D] -> tokens [B, T, token_dim]
+        bsz = x.shape[0]
+        tokens = x.view(bsz, self.num_tokens, self.token_dim)
+        t_emb = self.time_proj(self.time_embed(t)).unsqueeze(1)  # [B, 1, token_dim]
+        tokens = self.token_proj(tokens) + t_emb
+        tokens = self.encoder(tokens)
+        tokens = self.out_proj(tokens)
+        return tokens.reshape(bsz, self.embed_dim)
+
+
 class GaussianDiffusion1D:
     def __init__(self, betas):
         assert isinstance(betas, np.ndarray)

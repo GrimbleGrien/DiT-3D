@@ -8,7 +8,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from utils.embed_diffusion import DenoiserMLP, GaussianDiffusion1D, get_betas
+from utils.embed_diffusion import DenoiserMLP, DenoiserTransformer, GaussianDiffusion1D, get_betas
 
 
 def main():
@@ -26,6 +26,11 @@ def main():
     parser.add_argument("--embed_dim", type=int, default=0)
     parser.add_argument("--hidden_dim", type=int, default=1024)
     parser.add_argument("--time_dim", type=int, default=256)
+    parser.add_argument("--model_type", type=str, default="mlp", choices=["mlp", "transformer"])
+    parser.add_argument("--depth", type=int, default=6)
+    parser.add_argument("--num_heads", type=int, default=8)
+    parser.add_argument("--token_dim", type=int, default=64)
+    parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--real_embeddings", type=str, default="",
                         help="Optional path to real embeddings.npy for stats comparison")
     args = parser.parse_args()
@@ -40,6 +45,11 @@ def main():
     embed_dim = cfg.get("embed_dim", args.embed_dim)
     hidden_dim = cfg.get("hidden_dim", args.hidden_dim)
     time_dim = cfg.get("time_dim", args.time_dim)
+    model_type = cfg.get("model_type", args.model_type)
+    depth = cfg.get("depth", args.depth)
+    num_heads = cfg.get("num_heads", args.num_heads)
+    token_dim = cfg.get("token_dim", args.token_dim)
+    dropout = cfg.get("dropout", args.dropout)
     time_num = cfg.get("time_num", args.time_num)
     beta_start = cfg.get("beta_start", args.beta_start)
     beta_end = cfg.get("beta_end", args.beta_end)
@@ -48,7 +58,17 @@ def main():
     if embed_dim == 0:
         raise ValueError("embed_dim must be provided if not stored in checkpoint")
 
-    model = DenoiserMLP(embed_dim=embed_dim, hidden_dim=hidden_dim, time_dim=time_dim).to(device)
+    if model_type == "mlp":
+        model = DenoiserMLP(embed_dim=embed_dim, hidden_dim=hidden_dim, time_dim=time_dim).to(device)
+    else:
+        model = DenoiserTransformer(
+            embed_dim=embed_dim,
+            token_dim=token_dim,
+            depth=depth,
+            num_heads=num_heads,
+            time_dim=time_dim,
+            dropout=dropout,
+        ).to(device)
     model.load_state_dict(ckpt["model_state"], strict=False)
     model.eval()
 

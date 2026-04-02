@@ -10,7 +10,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from utils.embed_diffusion import DenoiserMLP, GaussianDiffusion1D, get_betas
+from utils.embed_diffusion import DenoiserMLP, DenoiserTransformer, GaussianDiffusion1D, get_betas
 
 
 def save_checkpoint(path, model, optimizer, epoch, loss, config):
@@ -39,6 +39,11 @@ def main():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--hidden_dim", type=int, default=2048)
     parser.add_argument("--time_dim", type=int, default=256)
+    parser.add_argument("--model_type", type=str, default="transformer", choices=["mlp", "transformer"])
+    parser.add_argument("--depth", type=int, default=6)
+    parser.add_argument("--num_heads", type=int, default=8)
+    parser.add_argument("--token_dim", type=int, default=64)
+    parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--lr_schedule", type=str, default="cosine", choices=["none", "cosine", "step"])
     parser.add_argument("--lr_step_size", type=int, default=100)
     parser.add_argument("--lr_gamma", type=float, default=0.5)
@@ -54,7 +59,17 @@ def main():
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
 
     embed_dim = emb_tensor.shape[1]
-    model = DenoiserMLP(embed_dim=embed_dim, hidden_dim=args.hidden_dim, time_dim=args.time_dim).to(device)
+    if args.model_type == "mlp":
+        model = DenoiserMLP(embed_dim=embed_dim, hidden_dim=args.hidden_dim, time_dim=args.time_dim).to(device)
+    else:
+        model = DenoiserTransformer(
+            embed_dim=embed_dim,
+            token_dim=args.token_dim,
+            depth=args.depth,
+            num_heads=args.num_heads,
+            time_dim=args.time_dim,
+            dropout=args.dropout,
+        ).to(device)
 
     betas = get_betas(args.schedule_type, args.beta_start, args.beta_end, args.time_num)
     diffusion = GaussianDiffusion1D(betas)
@@ -74,6 +89,11 @@ def main():
         "embed_dim": embed_dim,
         "hidden_dim": args.hidden_dim,
         "time_dim": args.time_dim,
+        "model_type": args.model_type,
+        "depth": args.depth,
+        "num_heads": args.num_heads,
+        "token_dim": args.token_dim,
+        "dropout": args.dropout,
         "time_num": args.time_num,
         "beta_start": args.beta_start,
         "beta_end": args.beta_end,

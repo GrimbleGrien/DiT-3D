@@ -1,6 +1,6 @@
 python scripts/train_embed_diffusion.py \
     --emb_path data/mae_embeddings/embeddings.npy \
-    --epochs 400 \
+    --epochs 600 \
     --time_num 200 \
     --batch_size 256 \
     --lr 1e-4 \
@@ -8,4 +8,9 @@ python scripts/train_embed_diffusion.py \
     --seed 42 \
     --device cuda:0 \
     --hidden_dim 2048 \
-    --lr_schedule cosine
+    --lr_schedule cosine \
+    --model_type transformer \
+    --depth 8 \
+    --num_heads 8 \
+    --token_dim 64 \
+    --dropout 0.1

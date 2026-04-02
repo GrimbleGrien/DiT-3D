@@ -4,4 +4,9 @@ python scripts/sample_embed_diffusion.py \
     --output_path outputs/embed_diffusion/samples.npy \
     --device cuda:0 \
     --seed 42 \
-    --real_embeddings data/mae_embeddings/embeddings.npy
+    --real_embeddings data/mae_embeddings/embeddings.npy \
+    --model_type transformer \
+    --depth 8 \
+    --num_heads 8 \
+    --token_dim 64 \
+    --dropout 0.1
