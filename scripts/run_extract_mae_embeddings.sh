@@ -1,0 +1,13 @@
+python scripts/extract_mae_embeddings.py \
+    --checkpoint checkpoints/jmae500/best.pth \
+    --dataroot ../../PSF/data/ShapeNetCore.v2.PC15k/ \
+    --category chair \
+    --npoints 2048 \
+    --voxel_size 32 \
+    --mae_config_path configs/pretrainMAE.yaml \
+    --mae_points 1024 \
+    --mae_mask_ratio 0.6 \
+    --output_dir data/mae_embeddings \
+    --seed 42 \
+    --use_ema \
+    --device cuda:0
