@@ -445,12 +445,12 @@ class Model(nn.Module):
         }
 
 
-    def _denoise(self, data, t, y, mae=None):
+    def _denoise(self, data, t, y, mae=None, mae_embed=None):
         B, D,N= data.shape
         assert data.dtype == torch.float
         assert t.shape == torch.Size([B]) and t.dtype == torch.int64
 
-        out = self.model(data, t, y, mae=mae)
+        out = self.model(data, t, y, mae=mae, mae_embed=mae_embed)
 
         assert out.shape == torch.Size([B, D, N])
         return out
@@ -483,6 +483,10 @@ class Model(nn.Module):
             model = model.module
         return model.mae_embedder
 
+    def get_mae_embed(self, mae_pts):
+        mae_embedder = self._get_mae_embedder()
+        return mae_embedder(mae_pts)
+
     def set_mae_only_trainable(self, mae_only: bool):
         model = self.model
         if isinstance(model, (nn.DataParallel, nn.parallel.DistributedDataParallel)):
@@ -493,7 +497,7 @@ class Model(nn.Module):
             for p in model.mae_embedder.parameters():
                 p.requires_grad = True
 
-    def get_loss_iter(self, data, noises=None, y=None, mae_points=None, mae_mask_ratio=None, mae_drop_prob=0.0, return_mae_loss=False):
+    def get_loss_iter(self, data, noises=None, y=None, mae_points=None, mae_mask_ratio=None, mae_drop_prob=0.0, return_mae_loss=False, force_mae=False):
         B, D, N = data.shape                           # [16, 3, 2048]
         t = torch.randint(0, self.diffusion.num_timesteps, size=(B,), device=data.device)
 
@@ -503,7 +507,7 @@ class Model(nn.Module):
         mae = None
         mae_loss = data.new_zeros(())
         if self.use_mae:
-            if mae_drop_prob > 0 and torch.rand(1, device=data.device).item() < mae_drop_prob:
+            if (not force_mae) and mae_drop_prob > 0 and torch.rand(1, device=data.device).item() < mae_drop_prob:
                 mae = None
             else:
                 mask_ratio = mae_mask_ratio if mae_mask_ratio is not None else 0.6
@@ -530,18 +534,19 @@ class Model(nn.Module):
     def gen_samples(self, shape, device, y, noise_fn=torch.randn,
                     clip_denoised=True,
                     keep_running=False,
-                    mae=None):
+                    mae=None,
+                    mae_embed=None):
         def denoise_fn(data_in, t_in, y_in):
-            return self._denoise(data_in, t_in, y_in, mae=mae)
+            return self._denoise(data_in, t_in, y_in, mae=mae, mae_embed=mae_embed)
 
         return self.diffusion.p_sample_loop(denoise_fn, shape=shape, device=device, y=y, noise_fn=noise_fn,
                                             clip_denoised=clip_denoised,
                                             keep_running=keep_running)
 
     def gen_sample_traj(self, shape, device, y, freq, noise_fn=torch.randn,
-                    clip_denoised=True,keep_running=False, mae=None):
+                    clip_denoised=True,keep_running=False, mae=None, mae_embed=None):
         def denoise_fn(data_in, t_in, y_in):
-            return self._denoise(data_in, t_in, y_in, mae=mae)
+            return self._denoise(data_in, t_in, y_in, mae=mae, mae_embed=mae_embed)
 
         return self.diffusion.p_sample_loop_trajectory(denoise_fn, shape=shape, device=device, y=y, noise_fn=noise_fn, freq=freq,
                                                        clip_denoised=clip_denoised,
@@ -763,8 +768,15 @@ def train(gpu, opt, output_dir, noises_init):
 
     if opt.model != '':
         ckpt = torch.load(opt.model)
-        model.load_state_dict(ckpt['model_state'])
-        optimizer.load_state_dict(ckpt['optimizer_state'])
+        missing, unexpected = model.load_state_dict(ckpt['model_state'], strict=False)
+        if should_diag:
+            logger.info(f'Loaded checkpoint with missing keys: {missing}')
+            logger.info(f'Loaded checkpoint with unexpected keys: {unexpected}')
+        try:
+            optimizer.load_state_dict(ckpt['optimizer_state'])
+        except Exception as e:
+            if should_diag:
+                logger.info(f'Optimizer state not loaded due to mismatch: {e}')
 
     if opt.model != '':
         start_epoch = torch.load(opt.model)['epoch'] + 1
@@ -841,7 +853,8 @@ def train(gpu, opt, output_dir, noises_init):
                 mae_points=opt.mae_points if use_mae_now else None,
                 mae_mask_ratio=opt.mae_mask_ratio if use_mae_now else None,
                 mae_drop_prob=mae_drop_prob if use_mae_now else 0.0,
-                return_mae_loss=True
+                return_mae_loss=True,
+                force_mae=mae_only
             )
             loss = losses.mean() + mae_lambda * mae_loss
 

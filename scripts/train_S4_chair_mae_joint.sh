@@ -1,13 +1,13 @@
 python train.py --gpu 0 \
     --dataroot ../../PSF/data/ShapeNetCore.v2.PC15k/ \
     --category chair \
-    --experiment_name 'mae500' \
+    --experiment_name 'jmae500' \
     --model_type 'DiT-S/4' \
     --bs 16 \
     --voxel_size 32 \
     --lr 1e-4 \
     --use_tb \
-    --niter 500 \
+    --niter 2000 \
     --saveIter 1 \
     --use_mae \
     --mae_config_path 'configs/pretrainMAE.yaml' \
@@ -15,8 +15,8 @@ python train.py --gpu 0 \
     --mae_mask_ratio 0.6 \
     --mae_drop_prob 0.1 \
     --mae_lambda 0.1 \
-    --mae_start_epoch 100 \
+    --mae_start_epoch 1700 \
     --mae_warmup_epochs 50 \
     --mae_freeze_dit \
     --vizIter 100 \
-    # --model 'checkpoints/mae500/latest.pth'
+    --model 'checkpoints/dit1000/best.pth'
