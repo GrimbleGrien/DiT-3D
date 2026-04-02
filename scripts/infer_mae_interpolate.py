@@ -99,6 +99,8 @@ def main():
     parser.add_argument("--interp_mode", type=str, default="lerp",
                         choices=["lerp", "nlerp", "slerp", "cosine", "power_in", "power_out"],
                         help="Interpolation mode for MAE embeddings")
+    parser.add_argument("--interp_modes", type=str, default="",
+                        help="Comma-separated list of interpolation modes; overrides --interp_mode")
     parser.add_argument("--power_alpha", type=float, default=2.0, help="Exponent for power_in/power_out t-warping")
     parser.add_argument("--model_type", type=str, default="DiT-S/4")
     parser.add_argument("--num_classes", type=int, default=55)
@@ -162,30 +164,39 @@ def main():
     )
     e0 = model.get_mae_embed(mae0)  # [1, hidden]
     e1 = model.get_mae_embed(mae1)  # [1, hidden]
-    if args.interp_mode == "lerp":
-        embeds = (1 - t_vals) * e0 + t_vals * e1  # [steps, hidden]
-    elif args.interp_mode == "nlerp":
-        mixed = (1 - t_vals) * e0 + t_vals * e1
-        embeds = mixed / (mixed.norm(dim=1, keepdim=True) + 1e-8)
-    elif args.interp_mode == "slerp":
-        embeds = slerp(e0, e1, t_vals)
-    elif args.interp_mode in ("cosine", "power_in", "power_out"):
-        t_warp = interp_t(t_vals, mode=args.interp_mode, power_alpha=args.power_alpha)
-        embeds = (1 - t_warp) * e0 + t_warp * e1
+    if args.interp_modes.strip():
+        modes = [m.strip() for m in args.interp_modes.split(",") if m.strip()]
     else:
-        raise ValueError(f"Unknown interp_mode: {args.interp_mode}")
+        modes = [args.interp_mode]
 
-    # generate samples for each embedding
-    outputs = []
-    for i in range(steps):
-        emb = embeds[i:i+1]
-        noise_shape = (args.batch_size, 3, args.npoints)
-        gen = model.gen_samples(
-            shape=noise_shape, device=device, y=y0, mae_embed=emb, clip_denoised=args.clip_denoised
-        )
-        outputs.append(gen.detach().cpu())
+    outputs_by_mode = {}
+    for mode in modes:
+        if mode == "lerp":
+            embeds = (1 - t_vals) * e0 + t_vals * e1  # [steps, hidden]
+        elif mode == "nlerp":
+            mixed = (1 - t_vals) * e0 + t_vals * e1
+            embeds = mixed / (mixed.norm(dim=1, keepdim=True) + 1e-8)
+        elif mode == "slerp":
+            embeds = slerp(e0, e1, t_vals)
+        elif mode in ("cosine", "power_in", "power_out"):
+            t_warp = interp_t(t_vals, mode=mode, power_alpha=args.power_alpha)
+            embeds = (1 - t_warp) * e0 + t_warp * e1
+        else:
+            raise ValueError(f"Unknown interp_mode: {mode}")
 
-    outputs = torch.cat(outputs, dim=0)  # [steps, 3, N]
+        # batched generation for all embeddings at once (faster)
+        total_bs = args.batch_size * steps
+        emb_batch = embeds.repeat_interleave(args.batch_size, dim=0)  # [steps*bs, hidden]
+        y_batch = y0.repeat(total_bs)  # [steps*bs]
+        noise_shape = (total_bs, 3, args.npoints)
+        outputs = model.gen_samples(
+            shape=noise_shape,
+            device=device,
+            y=y_batch,
+            mae_embed=emb_batch,
+            clip_denoised=args.clip_denoised,
+        ).detach().cpu()
+        outputs_by_mode[mode] = outputs
 
     os.makedirs(args.output_dir, exist_ok=True)
     np.save(os.path.join(args.output_dir, "cond_a.npy"), x0.detach().cpu().numpy())
@@ -197,16 +208,20 @@ def main():
     else:
         parent_ids = (t_vals.squeeze(1) > 0.5).long().cpu().numpy()
     np.save(os.path.join(args.output_dir, "parent_ids.npy"), parent_ids)
-    np.save(os.path.join(args.output_dir, "interp_samples.npy"), outputs.numpy())
+    for mode, outputs in outputs_by_mode.items():
+        interp_npy = f"interp_samples_{mode}.npy"
+        np.save(os.path.join(args.output_dir, interp_npy), outputs.numpy())
     np.save(os.path.join(args.output_dir, "embed_a.npy"), e0.detach().cpu().numpy())
     np.save(os.path.join(args.output_dir, "embed_b.npy"), e1.detach().cpu().numpy())
 
     # visualization grid
-    visualize_pointcloud_batch(
-        os.path.join(args.output_dir, "interp_samples.png"),
-        outputs.transpose(1, 2),
-        None, None, None
-    )
+    for mode, outputs in outputs_by_mode.items():
+        interp_png = f"interp_samples_{mode}.png"
+        visualize_pointcloud_batch(
+            os.path.join(args.output_dir, interp_png),
+            outputs.transpose(1, 2),
+            None, None, None
+        )
     visualize_pointcloud_batch(
         os.path.join(args.output_dir, "parents_ab.png"),
         torch.cat([x0.cpu(), x1.cpu()], dim=0),
