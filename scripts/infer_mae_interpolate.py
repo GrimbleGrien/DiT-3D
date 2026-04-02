@@ -1,7 +1,12 @@
 import argparse
 import os
+import sys
 import numpy as np
 import torch
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 from train import (
     Model,
@@ -55,6 +60,8 @@ def main():
     parser.add_argument("--output_dir", type=str, default="outputs/mae_interp")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--use_ema", action="store_true")
+    parser.add_argument("--clip_denoised", action="store_true", help="Enable clip_denoised during sampling")
+    parser.add_argument("--use_point_mae", action="store_true", help="Interpolate point-cloud MAE inputs instead of embeddings")
     parser.add_argument("--model_type", type=str, default="DiT-S/4")
     parser.add_argument("--num_classes", type=int, default=55)
     parser.add_argument("--schedule_type", type=str, default="linear")
@@ -97,40 +104,67 @@ def main():
     min_keep = getattr(mae_embedder, "num_group", None)
 
     # build masked MAE inputs and embeddings
-    mae0 = model.build_mae_input(
-        x0.transpose(1, 2),
-        mae_points=args.mae_points,
-        mae_mask_ratio=args.mae_mask_ratio,
-        min_keep=min_keep
-    )
-    mae1 = model.build_mae_input(
-        x1.transpose(1, 2),
-        mae_points=args.mae_points,
-        mae_mask_ratio=args.mae_mask_ratio,
-        min_keep=min_keep
-    )
-
-    e0 = model.get_mae_embed(mae0)  # [1, hidden]
-    e1 = model.get_mae_embed(mae1)  # [1, hidden]
-
     steps = max(2, args.steps)
     t_vals = torch.linspace(0, 1, steps, device=device).view(-1, 1)
-    embeds = (1 - t_vals) * e0 + t_vals * e1  # [steps, hidden]
+    if args.use_point_mae:
+        mae0 = model.build_mae_input(
+            x0.transpose(1, 2),
+            mae_points=args.mae_points,
+            mae_mask_ratio=args.mae_mask_ratio,
+            min_keep=min_keep
+        )
+        mae1 = model.build_mae_input(
+            x1.transpose(1, 2),
+            mae_points=args.mae_points,
+            mae_mask_ratio=args.mae_mask_ratio,
+            min_keep=min_keep
+        )
+        mae0_pts = mae0.squeeze(0)
+        mae1_pts = mae1.squeeze(0)
+        t_pts = torch.linspace(0, 1, steps, device=device).view(-1, 1, 1)
+        mae_inputs = (1 - t_pts) * mae0_pts + t_pts * mae1_pts  # [steps, M, 3]
+        outputs = []
+        for i in range(steps):
+            mae_in = mae_inputs[i:i+1]
+            noise_shape = (args.batch_size, 3, args.npoints)
+            gen = model.gen_samples(
+                shape=noise_shape, device=device, y=y0, mae=mae_in, clip_denoised=args.clip_denoised
+            )
+            outputs.append(gen.detach().cpu())
+    else:
+        mae0 = model.build_mae_input(
+            x0.transpose(1, 2),
+            mae_points=args.mae_points,
+            mae_mask_ratio=args.mae_mask_ratio,
+            min_keep=min_keep
+        )
+        mae1 = model.build_mae_input(
+            x1.transpose(1, 2),
+            mae_points=args.mae_points,
+            mae_mask_ratio=args.mae_mask_ratio,
+            min_keep=min_keep
+        )
+        e0 = model.get_mae_embed(mae0)  # [1, hidden]
+        e1 = model.get_mae_embed(mae1)  # [1, hidden]
+        embeds = (1 - t_vals) * e0 + t_vals * e1  # [steps, hidden]
 
-    # generate samples for each embedding
-    outputs = []
-    for i in range(steps):
-        emb = embeds[i:i+1]
-        noise_shape = (args.batch_size, 3, args.npoints)
-        gen = model.gen_samples(shape=noise_shape, device=device, y=y0, mae_embed=emb, clip_denoised=True)
-        outputs.append(gen.detach().cpu())
+        # generate samples for each embedding
+        outputs = []
+        for i in range(steps):
+            emb = embeds[i:i+1]
+            noise_shape = (args.batch_size, 3, args.npoints)
+            gen = model.gen_samples(
+                shape=noise_shape, device=device, y=y0, mae_embed=emb, clip_denoised=args.clip_denoised
+            )
+            outputs.append(gen.detach().cpu())
 
     outputs = torch.cat(outputs, dim=0)  # [steps, 3, N]
 
     os.makedirs(args.output_dir, exist_ok=True)
     np.save(os.path.join(args.output_dir, "interp_samples.npy"), outputs.numpy())
-    np.save(os.path.join(args.output_dir, "embed_a.npy"), e0.detach().cpu().numpy())
-    np.save(os.path.join(args.output_dir, "embed_b.npy"), e1.detach().cpu().numpy())
+    if not args.use_point_mae:
+        np.save(os.path.join(args.output_dir, "embed_a.npy"), e0.detach().cpu().numpy())
+        np.save(os.path.join(args.output_dir, "embed_b.npy"), e1.detach().cpu().numpy())
 
     # visualization grid
     visualize_pointcloud_batch(
