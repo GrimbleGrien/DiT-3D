@@ -37,8 +37,11 @@ def main():
     parser.add_argument("--output_dir", type=str, default="outputs/embed_diffusion")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--hidden_dim", type=int, default=1024)
+    parser.add_argument("--hidden_dim", type=int, default=2048)
     parser.add_argument("--time_dim", type=int, default=256)
+    parser.add_argument("--lr_schedule", type=str, default="cosine", choices=["none", "cosine", "step"])
+    parser.add_argument("--lr_step_size", type=int, default=100)
+    parser.add_argument("--lr_gamma", type=float, default=0.5)
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -57,6 +60,12 @@ def main():
     diffusion = GaussianDiffusion1D(betas)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.0)
+    if args.lr_schedule == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    elif args.lr_schedule == "step":
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
+    else:
+        scheduler = None
 
     os.makedirs(args.output_dir, exist_ok=True)
     best_loss = None
@@ -89,7 +98,12 @@ def main():
         if best_loss is None or avg_loss < best_loss:
             best_loss = avg_loss
             save_checkpoint(os.path.join(args.output_dir, "best.pth"), model, optimizer, epoch, avg_loss, config)
-        print(f"[{epoch+1:03d}/{args.epochs:03d}] loss={avg_loss:.6f}")
+        if scheduler is not None:
+            scheduler.step()
+            lr_val = scheduler.get_last_lr()[0]
+        else:
+            lr_val = optimizer.param_groups[0]["lr"]
+        print(f"[{epoch+1:03d}/{args.epochs:03d}] loss={avg_loss:.6f} lr={lr_val:.6e}")
 
 
 if __name__ == "__main__":

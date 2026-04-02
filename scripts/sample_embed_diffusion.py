@@ -26,6 +26,8 @@ def main():
     parser.add_argument("--embed_dim", type=int, default=0)
     parser.add_argument("--hidden_dim", type=int, default=1024)
     parser.add_argument("--time_dim", type=int, default=256)
+    parser.add_argument("--real_embeddings", type=str, default="",
+                        help="Optional path to real embeddings.npy for stats comparison")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -62,7 +64,24 @@ def main():
     if args.save_pt:
         torch.save(samples.cpu(), os.path.splitext(args.output_path)[0] + ".pt")
 
+    def stats(arr):
+        arr = arr.astype(np.float64)
+        return {
+            "mean": float(arr.mean()),
+            "std": float(arr.std()),
+            "min": float(arr.min()),
+            "max": float(arr.max()),
+            "l2_mean": float(np.linalg.norm(arr, axis=1).mean()),
+            "l2_std": float(np.linalg.norm(arr, axis=1).std()),
+        }
+
     print(f"Saved samples to {args.output_path}")
+    s_stats = stats(samples_np)
+    print(f"sample_stats: {s_stats}")
+    if args.real_embeddings:
+        real = np.load(args.real_embeddings)
+        r_stats = stats(real)
+        print(f"real_stats: {r_stats}")
 
 
 if __name__ == "__main__":

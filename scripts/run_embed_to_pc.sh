@@ -10,7 +10,7 @@ python scripts/infer_from_embeddings.py \
     --embeddings outputs/embed_diffusion/samples.npy \
     --output_dir outputs/pc_from_embeds \
     --device cuda:0 \
-    --batch_size 8 \
+    --batch_size 16 \
     --npoints 2048 \
     --voxel_size 32 \
     --mae_config_path configs/pretrainMAE.yaml \
