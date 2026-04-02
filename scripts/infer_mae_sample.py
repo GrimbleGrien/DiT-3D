@@ -37,6 +37,12 @@ def build_args(cli):
     )
 
 
+def normalize_state_dict(state_dict):
+    if any(k.startswith("model.module.") for k in state_dict.keys()):
+        return {k.replace("model.module.", "model."): v for k, v in state_dict.items()}
+    return state_dict
+
+
 def mask_points(pts, mae_points, mae_mask_ratio):
     """
     pts: [B, N, 3]
@@ -106,7 +112,8 @@ def main():
 
     ckpt = torch.load(args.checkpoint, map_location=device)
     state_key = "ema" if (args.use_ema and "ema" in ckpt) else "model_state"
-    model.load_state_dict(ckpt[state_key])
+    state = normalize_state_dict(ckpt[state_key])
+    model.load_state_dict(state)
     model.eval()
 
     # run conditioned sampling

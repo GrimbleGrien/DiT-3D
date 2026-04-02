@@ -52,6 +52,11 @@ def build_args(cli):
         time_num=cli.time_num,
     )
 
+def normalize_state_dict(state_dict):
+    if any(k.startswith("model.module.") for k in state_dict.keys()):
+        return {k.replace("model.module.", "model."): v for k, v in state_dict.items()}
+    return state_dict
+
 
 @torch.no_grad()
 def main():
@@ -98,8 +103,13 @@ def main():
 
     ckpt = torch.load(args.checkpoint, map_location=device)
     state_key = "ema" if (args.use_ema and "ema" in ckpt) else "model_state"
-    model.load_state_dict(ckpt[state_key], strict=False)
+    state = normalize_state_dict(ckpt[state_key])
+    missing, unexpected = model.load_state_dict(state, strict=False)
     model.eval()
+    if len(missing) > 0:
+        print(f"[debug] missing_keys: {len(missing)}")
+    if len(unexpected) > 0:
+        print(f"[debug] unexpected_keys: {len(unexpected)}")
 
     x_cond, y_eval = sample_eval_cond(x, y, args.eval_bs)
 
@@ -120,6 +130,13 @@ def main():
         mae=mae_eval,
         clip_denoised=False,
     )
+    gen_uncond = model.gen_samples(
+        shape=new_x_chain(x_cond, args.eval_bs).shape,
+        device=device,
+        y=y_eval,
+        mae=None,
+        clip_denoised=False,
+    )
 
     os.makedirs(args.output_dir, exist_ok=True)
     np.save(os.path.join(args.output_dir, "samples_eval.npy"), gen_eval.cpu().numpy())
@@ -138,10 +155,18 @@ def main():
 
     stats = [gen_eval.mean().item(), gen_eval.std().item()]
     gen_eval_range = [gen_eval.min().item(), gen_eval.max().item()]
+    cond_stats = [mae_eval.mean().item(), mae_eval.std().item()]
+    cond_range = [mae_eval.min().item(), mae_eval.max().item()]
+    l2_diff = torch.norm(gen_eval - gen_uncond, dim=1).mean().item()
     print(
         f"eval_gen_range: [{gen_eval_range[0]:.4f}, {gen_eval_range[1]:.4f}] "
         f"eval_gen_stats: [mean={stats[0]:.4f}, std={stats[1]:.4f}]"
     )
+    print(
+        f"mae_eval_range: [{cond_range[0]:.4f}, {cond_range[1]:.4f}] "
+        f"mae_eval_stats: [mean={cond_stats[0]:.4f}, std={cond_stats[1]:.4f}]"
+    )
+    print(f"l2_diff_vs_uncond: {l2_diff:.6f}")
     print(f"Saved outputs to {args.output_dir}")
 
 
