@@ -49,6 +49,30 @@ def normalize_state_dict(state_dict):
     return state_dict
 
 
+def interp_t(t_vals, mode="linear", power_alpha=2.0):
+    if mode == "linear":
+        return t_vals
+    if mode == "cosine":
+        return 0.5 - 0.5 * torch.cos(np.pi * t_vals)
+    if mode == "power_in":
+        return torch.pow(t_vals, power_alpha)
+    if mode == "power_out":
+        return 1.0 - torch.pow(1.0 - t_vals, power_alpha)
+    raise ValueError(f"Unknown t interpolation mode: {mode}")
+
+
+def slerp(e0, e1, t_vals, eps=1e-8):
+    # e0, e1: [1, hidden], t_vals: [steps, 1]
+    e0_n = e0 / (e0.norm(dim=1, keepdim=True) + eps)
+    e1_n = e1 / (e1.norm(dim=1, keepdim=True) + eps)
+    dot = (e0_n * e1_n).sum(dim=1, keepdim=True).clamp(-1 + eps, 1 - eps)
+    omega = torch.acos(dot)  # [1,1]
+    so = torch.sin(omega)
+    if torch.any(so < eps):
+        return (1 - t_vals) * e0 + t_vals * e1
+    return (torch.sin((1 - t_vals) * omega) / so) * e0 + (torch.sin(t_vals * omega) / so) * e1
+
+
 @torch.no_grad()
 def main():
     parser = argparse.ArgumentParser(description="MAE embedding interpolation inference")
@@ -70,6 +94,12 @@ def main():
     parser.add_argument("--use_point_mae", action="store_true", help="Deprecated: embeddings are always interpolated; point-clouds are not interpolated")
     parser.add_argument("--idx_a", type=int, default=-1, help="Dataset index for endpoint A (-1 = random)")
     parser.add_argument("--idx_b", type=int, default=-1, help="Dataset index for endpoint B (-1 = random)")
+    parser.add_argument("--anchor_parent", type=str, default="closest", choices=["closest", "a", "b"],
+                        help="Point-cloud conditioning source for all steps: closest (default), a, or b")
+    parser.add_argument("--interp_mode", type=str, default="lerp",
+                        choices=["lerp", "nlerp", "slerp", "cosine", "power_in", "power_out"],
+                        help="Interpolation mode for MAE embeddings")
+    parser.add_argument("--power_alpha", type=float, default=2.0, help="Exponent for power_in/power_out t-warping")
     parser.add_argument("--model_type", type=str, default="DiT-S/4")
     parser.add_argument("--num_classes", type=int, default=55)
     parser.add_argument("--schedule_type", type=str, default="linear")
@@ -132,7 +162,18 @@ def main():
     )
     e0 = model.get_mae_embed(mae0)  # [1, hidden]
     e1 = model.get_mae_embed(mae1)  # [1, hidden]
-    embeds = (1 - t_vals) * e0 + t_vals * e1  # [steps, hidden]
+    if args.interp_mode == "lerp":
+        embeds = (1 - t_vals) * e0 + t_vals * e1  # [steps, hidden]
+    elif args.interp_mode == "nlerp":
+        mixed = (1 - t_vals) * e0 + t_vals * e1
+        embeds = mixed / (mixed.norm(dim=1, keepdim=True) + 1e-8)
+    elif args.interp_mode == "slerp":
+        embeds = slerp(e0, e1, t_vals)
+    elif args.interp_mode in ("cosine", "power_in", "power_out"):
+        t_warp = interp_t(t_vals, mode=args.interp_mode, power_alpha=args.power_alpha)
+        embeds = (1 - t_warp) * e0 + t_warp * e1
+    else:
+        raise ValueError(f"Unknown interp_mode: {args.interp_mode}")
 
     # generate samples for each embedding
     outputs = []
@@ -149,7 +190,12 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     np.save(os.path.join(args.output_dir, "cond_a.npy"), x0.detach().cpu().numpy())
     np.save(os.path.join(args.output_dir, "cond_b.npy"), x1.detach().cpu().numpy())
-    parent_ids = (t_vals.squeeze(1) > 0.5).long().cpu().numpy()
+    if args.anchor_parent == "a":
+        parent_ids = np.zeros(steps, dtype=np.int64)
+    elif args.anchor_parent == "b":
+        parent_ids = np.ones(steps, dtype=np.int64)
+    else:
+        parent_ids = (t_vals.squeeze(1) > 0.5).long().cpu().numpy()
     np.save(os.path.join(args.output_dir, "parent_ids.npy"), parent_ids)
     np.save(os.path.join(args.output_dir, "interp_samples.npy"), outputs.numpy())
     np.save(os.path.join(args.output_dir, "embed_a.npy"), e0.detach().cpu().numpy())
@@ -161,26 +207,9 @@ def main():
         outputs.transpose(1, 2),
         None, None, None
     )
-    # visualize nearest-parent conditioning for each step (no interpolation of point clouds)
-    parent_conds = []
-    for i in range(steps):
-        parent_conds.append(x0 if parent_ids[i] == 0 else x1)
-    parent_conds = torch.cat(parent_conds, dim=0)  # [steps, N, 3]
     visualize_pointcloud_batch(
-        os.path.join(args.output_dir, "parent_cond.png"),
-        parent_conds,
-        None, None, None
-    )
-    # combined parent + generated per step (parent, child) for visual comparison
-    gen_pts = outputs.transpose(1, 2)  # [steps, N, 3]
-    combined = []
-    for i in range(steps):
-        combined.append(parent_conds[i:i+1])
-        combined.append(gen_pts[i:i+1])
-    combined = torch.cat(combined, dim=0)  # [steps*2, N, 3]
-    visualize_pointcloud_batch(
-        os.path.join(args.output_dir, "parent_child.png"),
-        combined,
+        os.path.join(args.output_dir, "parents_ab.png"),
+        torch.cat([x0.cpu(), x1.cpu()], dim=0),
         None, None, None
     )
     visualize_pointcloud_batch(

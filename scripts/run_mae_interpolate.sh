@@ -12,4 +12,5 @@ python scripts/infer_mae_interpolate.py \
     --output_dir outputs/mae_interpol42 \
     --seed 42 \
     --use_ema \
-    --use_point_mae
+    --anchor_parent a \
+    --interp_mode slerp
