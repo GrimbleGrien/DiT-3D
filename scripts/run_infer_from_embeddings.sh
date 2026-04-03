@@ -1,9 +1,9 @@
 python scripts/infer_from_embeddings.py \
     --checkpoint checkpoints/jmae500/best.pth \
-    --embeddings outputs/embed_diffusion_norm/samples.npy \
-    --output_dir outputs/pc_from_embeds \
+    --embeddings outputs/embed_diffusion/near_samples_29.npy \
+    --output_dir outputs/pc_from_embeds_nearby \
     --device cuda:0 \
-    --batch_size 16 \
+    --batch_size 25 \
     --npoints 2048 \
     --voxel_size 32 \
     --mae_config_path configs/pretrainMAE.yaml \

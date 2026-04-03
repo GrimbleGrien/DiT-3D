@@ -1,9 +1,13 @@
 python scripts/sample_near_embeddings.py \
     --input_embeddings data/mae_embeddings/embeddings.npy \
-    --index 0 \
+    --index 29 \
     --num_samples 25 \
     --noise_sigma 0.5 \
-    --output_path outputs/embed_diffusion/near_samples.npy \
+    --output_path outputs/embed_diffusion/near_samples_29.npy \
     --real_embeddings data/mae_embeddings/embeddings.npy \
     --match_stats \
-    --seed 42
+    --seed 42 \
+    --dataroot ../../PSF/data/ShapeNetCore.v2.PC15k/ \
+    --category chair \
+    --npoints 2048 \
+    --ref_output_path outputs/embed_diffusion/near_ref_29.png

@@ -64,6 +64,7 @@ def main():
     parser.add_argument("--use_ema", action="store_true")
     parser.add_argument("--clip_denoised", action="store_true")
     parser.add_argument("--class_idx", type=int, default=0, help="Class index used for conditioning")
+    parser.add_argument("--debug_stats", action="store_true", help="Print embedding/output diversity stats")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -100,6 +101,17 @@ def main():
             clip_denoised=args.clip_denoised,
         )
         gen_cpu = gen.detach().cpu()
+        if args.debug_stats and i == 0:
+            with torch.no_grad():
+                emb_np = emb_batch.detach().cpu().numpy()
+                if emb_np.shape[0] >= 2:
+                    d01 = float(np.linalg.norm(emb_np[0] - emb_np[1]))
+                    d12 = float(np.linalg.norm(emb_np[1] - emb_np[2])) if emb_np.shape[0] >= 3 else None
+                else:
+                    d01, d12 = None, None
+                out_np = gen_cpu.numpy()
+                out_d01 = float(np.linalg.norm(out_np[0] - out_np[1])) if out_np.shape[0] >= 2 else None
+                print(f"[debug] emb_l2_0_1={d01} emb_l2_1_2={d12} out_l2_0_1={out_d01}")
         outputs.append(gen_cpu)
         grid_path = os.path.join(args.output_dir, f"pc_from_embeddings_batch_{grid_idx:04d}.png")
         visualize_pointcloud_batch(

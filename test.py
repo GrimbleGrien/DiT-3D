@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 from datasets.shapenet_data_pc import ShapeNet15kPointClouds
 from models.dit3d import DiT3D_models
+from train import Model as TrainModel, get_betas as train_get_betas, get_default_mae_mask_ratio
 from utils.misc import Evaluator
 
 
@@ -431,7 +432,7 @@ def generate_eval(model, opt, gpu, outf_syn, evaluator):
 
 
     def new_y_chain(device, num_chain, num_classes):
-        return torch.randint(low=0,high=num_classes,size=(num_chain,),device=device)
+        return torch.randint(low=0, high=num_classes, size=(num_chain,), device=device)
     
     with torch.no_grad():
 
@@ -441,9 +442,9 @@ def generate_eval(model, opt, gpu, outf_syn, evaluator):
 
             x = data['test_points'].transpose(1,2)
             m, s = data['mean'].float(), data['std'].float()
-            y = data['cate_idx']
-            
-            gen = model.gen_samples(x.shape, gpu, new_y_chain(gpu,y.shape[0],opt.num_classes), clip_denoised=False).detach().cpu()
+            y = data['cate_idx'].to(gpu)
+            gen = model.gen_samples(x.shape, gpu, new_y_chain(gpu, y.shape[0], opt.num_classes),
+                                    clip_denoised=False).detach().cpu()
 
             gen = gen.transpose(1,2).contiguous()
             x = x.transpose(1,2).contiguous()
@@ -455,13 +456,11 @@ def generate_eval(model, opt, gpu, outf_syn, evaluator):
             visualize_pointcloud_batch(os.path.join(outf_syn, f'{i}_{gpu}.png'), gen, None,
                                        None, None)
             
-            # Compute metrics
+            # Compute metrics (unconditional path uses per-batch evaluator)
             results = compute_all_metrics(gen, x, opt.bs)
             results = {k: (v.cpu().detach().item()
                         if not isinstance(v, float) else v) for k, v in results.items()}
-
             jsd = JSD(gen.numpy(), x.numpy())
-
             evaluator.update(results, jsd)
 
         stats = evaluator.finalize_stats()
@@ -474,12 +473,91 @@ def generate_eval(model, opt, gpu, outf_syn, evaluator):
     return stats
 
 
+def generate_eval_conditional(model, opt, gpu, outf_syn):
+    _, test_dataset = get_dataset(opt.dataroot, opt.npoints, opt.category)
+    _, test_dataloader, _, _ = get_dataloader(opt, test_dataset, test_dataset)
+
+    pair_cd = []
+    pair_emd = []
+    samples = []
+    refs = []
+
+    mae_embedder = model._get_mae_embedder()
+    min_keep = getattr(mae_embedder, "num_group", None)
+
+    with torch.no_grad():
+        for i, data in tqdm(enumerate(test_dataloader), total=len(test_dataloader), desc='Generating Cond Samples'):
+            if opt.eval_subset > 0 and (i * opt.bs) >= opt.eval_subset:
+                break
+            x = data['test_points'].transpose(1, 2).to(gpu)
+            m, s = data['mean'].float().to(gpu), data['std'].float().to(gpu)
+            y = data['cate_idx'].to(gpu)
+
+            mae_in = model.build_mae_input(
+                x, mae_points=opt.mae_points, mae_mask_ratio=opt.mae_mask_ratio, min_keep=min_keep
+            )
+            gen = model.gen_samples(x.shape, gpu, y, clip_denoised=False, mae=mae_in).detach().cpu()
+
+            gen = gen.transpose(1, 2).contiguous()
+            x_cpu = x.transpose(1, 2).contiguous().detach().cpu()
+            m_cpu, s_cpu = m.cpu(), s.cpu()
+            gen = gen * s_cpu + m_cpu
+            x_cpu = x_cpu * s_cpu + m_cpu
+
+            samples.append(gen.to(gpu).contiguous())
+            refs.append(x_cpu.to(gpu).contiguous())
+
+            visualize_pointcloud_batch(os.path.join(outf_syn, f'{i}_{gpu}.png'), gen, None, None, None)
+
+            pair = EMD_CD(gen, x_cpu, opt.bs, reduced=False)
+            pair_cd.append(pair['MMD-CD'].detach().cpu())
+            pair_emd.append(pair['MMD-EMD'].detach().cpu())
+
+    samples = torch.cat(samples, dim=0)
+    refs = torch.cat(refs, dim=0)
+    if opt.eval_subset > 0:
+        samples = samples[:opt.eval_subset]
+        refs = refs[:opt.eval_subset]
+
+    # Distributional metrics (COV / 1-NNA) on full sets
+    results = compute_all_metrics(samples, refs, opt.bs)
+    results = {k: (v.cpu().detach().item()
+                if not isinstance(v, float) else v) for k, v in results.items()}
+    jsd = JSD(samples.cpu().numpy(), refs.cpu().numpy())
+
+    # Pairwise CD/EMD stats
+    pair_cd = torch.cat(pair_cd) if pair_cd else torch.tensor([])
+    pair_emd = torch.cat(pair_emd) if pair_emd else torch.tensor([])
+    stats = {
+        "pair_cd_mean": pair_cd.mean().item() if pair_cd.numel() > 0 else float('nan'),
+        "pair_cd_median": pair_cd.median().item() if pair_cd.numel() > 0 else float('nan'),
+        "pair_emd_mean": pair_emd.mean().item() if pair_emd.numel() > 0 else float('nan'),
+        "pair_emd_median": pair_emd.median().item() if pair_emd.numel() > 0 else float('nan'),
+    }
+    stats.update({
+        "1-NNA-CD": results["1-NN-CD-acc"],
+        "1-NNA-EMD": results["1-NN-EMD-acc"],
+        "COV-CD": results["lgan_cov-CD"],
+        "COV-EMD": results["lgan_cov-EMD"],
+        "MMD-CD": results["lgan_mmd-CD"],
+        "MMD-EMD": results["lgan_mmd-EMD"],
+        "JSD": jsd,
+    })
+
+    samples_gather = concat_all_gather(samples)
+    torch.save(samples_gather, opt.eval_path)
+
+    return stats
+
+
 def main(opt):
 
     if opt.category == 'airplane':
         opt.beta_start = 1e-5
         opt.beta_end = 0.008
         opt.schedule_type = 'warm0.1'
+    if opt.eval_conditional and opt.mae_mask_ratio is None:
+        opt.mae_mask_ratio = get_default_mae_mask_ratio(opt.mae_config_path)
 
     output_dir = get_output_dir(opt.model_dir, opt.experiment_name)
     copy_source(__file__, output_dir)
@@ -523,8 +601,12 @@ def test(gpu, opt, output_dir):
     create networks
     '''
 
-    betas = get_betas(opt.schedule_type, opt.beta_start, opt.beta_end, opt.time_num)
-    model = Model(opt, betas, opt.loss_type, opt.model_mean_type, opt.model_var_type)
+    if opt.eval_conditional:
+        betas = train_get_betas(opt.schedule_type, opt.beta_start, opt.beta_end, opt.time_num)
+        model = TrainModel(opt, betas, opt.loss_type, opt.model_mean_type, opt.model_var_type)
+    else:
+        betas = get_betas(opt.schedule_type, opt.beta_start, opt.beta_end, opt.time_num)
+        model = Model(opt, betas, opt.loss_type, opt.model_mean_type, opt.model_var_type)
 
     if opt.distribution_type == 'multi':  # Multiple processes, single GPU per process
         def _transform_(m):
@@ -565,12 +647,18 @@ def test(gpu, opt, output_dir):
             logger.info("Resume Path:%s" % opt.model)
 
         resumed_param = torch.load(opt.model)
-        model.load_state_dict(resumed_param['model_state'])
+        if opt.eval_conditional:
+            model.load_state_dict(resumed_param['model_state'], strict=False)
+        else:
+            model.load_state_dict(resumed_param['model_state'])
 
         opt.eval_path = os.path.join(outf_syn, 'samples.pth')
         Path(opt.eval_path).parent.mkdir(parents=True, exist_ok=True)
         
-        stats = generate_eval(model, opt, gpu, outf_syn, evaluator)
+        if opt.eval_conditional:
+            stats = generate_eval_conditional(model, opt, gpu, outf_syn)
+        else:
+            stats = generate_eval(model, opt, gpu, outf_syn, evaluator)
 
         if should_diag:
             logger.info(stats)
@@ -610,6 +698,13 @@ def parse_args():
     parser.add_argument('--model_var_type', default='fixedsmall')
 
     parser.add_argument('--model', default='',required=True, help="path to model (to continue training)")
+    parser.add_argument('--eval_conditional', action='store_true', help='Enable MAE-conditioned eval')
+    parser.add_argument('--use_mae', action='store_true', help='Enable MAE conditioning (required for conditional eval)')
+    parser.add_argument('--mae_config_path', type=str, default='configs/pretrainMAE.yaml')
+    parser.add_argument('--mae_points', type=int, default=1024)
+    parser.add_argument('--mae_mask_ratio', type=float, default=None)
+    parser.add_argument('--eval_k', type=int, default=1, help='Number of samples per input (currently fixed to 1)')
+    parser.add_argument('--eval_subset', type=int, default=0, help='If >0, evaluate only first N test samples')
 
     '''distributed'''
     parser.add_argument('--world_size', default=1, type=int,
