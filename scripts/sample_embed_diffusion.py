@@ -33,6 +33,8 @@ def main():
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--real_embeddings", type=str, default="",
                         help="Optional path to real embeddings.npy for stats comparison")
+    parser.add_argument("--match_stats", action="store_true",
+                        help="If set, rescale sampled embeddings to match real embedding mean/std")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -102,6 +104,14 @@ def main():
         real = np.load(args.real_embeddings)
         r_stats = stats(real)
         print(f"real_stats: {r_stats}")
+        if args.match_stats:
+            real_mean = real.mean(axis=0, keepdims=True)
+            real_std = real.std(axis=0, keepdims=True) + 1e-6
+            samp_mean = samples_np.mean(axis=0, keepdims=True)
+            samp_std = samples_np.std(axis=0, keepdims=True) + 1e-6
+            samples_np = (samples_np - samp_mean) / samp_std * real_std + real_mean
+            np.save(args.output_path, samples_np)
+            print("Applied per-dimension mean/std matching to samples.")
 
 
 if __name__ == "__main__":

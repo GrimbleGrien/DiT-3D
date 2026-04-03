@@ -9,4 +9,5 @@ python scripts/sample_embed_diffusion.py \
     --depth 8 \
     --num_heads 8 \
     --token_dim 64 \
-    --dropout 0.1
+    --dropout 0.1 \
+    --match_stats
