@@ -3,10 +3,10 @@ python test.py \
     --dataroot ../../PSF/data/ShapeNetCore.v2.PC15k/ \
     --category chair \
     --model_type DiT-S/4 \
-    --bs 8 \
+    --bs 16 \
     --eval_conditional \
     --use_mae \
     --mae_config_path configs/pretrainMAE.yaml \
     --mae_points 1024 \
     --mae_mask_ratio 0.6 \
-    --eval_subset 100
+    --experiment_name dit3d_conditional

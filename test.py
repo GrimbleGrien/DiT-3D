@@ -358,10 +358,13 @@ def concat_all_gather(tensor):
     Performs all_gather operation on the provided tensors.
     *** Warning ***: torch.distributed.all_gather has no gradient.
     """
+    import torch.distributed as dist
+    if not dist.is_initialized():
+        return tensor
     tensors_gather = [
-        torch.ones_like(tensor) for _ in range(torch.distributed.get_world_size())
+        torch.ones_like(tensor) for _ in range(dist.get_world_size())
     ]
-    torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
+    dist.all_gather(tensors_gather, tensor, async_op=False)
 
     output = torch.cat(tensors_gather, dim=0)
     return output
@@ -473,6 +476,66 @@ def generate_eval(model, opt, gpu, outf_syn, evaluator):
     return stats
 
 
+def generate_eval_unconditional(model, opt, gpu, outf_syn):
+    _, test_dataset = get_dataset(opt.dataroot, opt.npoints, opt.category)
+    _, test_dataloader, _, _ = get_dataloader(opt, test_dataset, test_dataset)
+
+    samples = []
+    refs = []
+
+    with torch.no_grad():
+        for i, data in tqdm(enumerate(test_dataloader), total=len(test_dataloader), desc='Generating Uncond Samples'):
+            if opt.eval_subset > 0 and (i * opt.bs) >= opt.eval_subset:
+                break
+            x = data['test_points'].transpose(1, 2)
+            m, s = data['mean'].float(), data['std'].float()
+            y = data['cate_idx']
+
+            device = next(model.parameters()).device
+            x = x.to(device)
+            m, s = m.to(device), s.to(device)
+            y = y.to(device)
+
+            gen = model.gen_samples(x.shape, device, y, clip_denoised=False, mae=None, mae_embed=None).detach().cpu()
+
+            gen = gen.transpose(1, 2).contiguous()
+            x_cpu = x.transpose(1, 2).contiguous().detach().cpu()
+            m_cpu, s_cpu = m.cpu(), s.cpu()
+            gen = gen * s_cpu + m_cpu
+            x_cpu = x_cpu * s_cpu + m_cpu
+
+            samples.append(gen.to(device).contiguous())
+            refs.append(x_cpu.to(device).contiguous())
+
+            visualize_pointcloud_batch(os.path.join(outf_syn, f'{i}_{gpu}.png'), gen, None, None, None)
+
+    samples = torch.cat(samples, dim=0)
+    refs = torch.cat(refs, dim=0)
+    if opt.eval_subset > 0:
+        samples = samples[:opt.eval_subset]
+        refs = refs[:opt.eval_subset]
+
+    results = compute_all_metrics(samples, refs, opt.bs)
+    results = {k: (v.cpu().detach().item()
+                if not isinstance(v, float) else v) for k, v in results.items()}
+    jsd = JSD(samples.cpu().numpy(), refs.cpu().numpy())
+
+    stats = {
+        "1-NNA-CD": results["1-NN-CD-acc"],
+        "1-NNA-EMD": results["1-NN-EMD-acc"],
+        "COV-CD": results["lgan_cov-CD"],
+        "COV-EMD": results["lgan_cov-EMD"],
+        "MMD-CD": results["lgan_mmd-CD"],
+        "MMD-EMD": results["lgan_mmd-EMD"],
+        "JSD": jsd,
+    }
+
+    samples_gather = concat_all_gather(samples)
+    torch.save(samples_gather, opt.eval_path)
+
+    return stats
+
+
 def generate_eval_conditional(model, opt, gpu, outf_syn):
     _, test_dataset = get_dataset(opt.dataroot, opt.npoints, opt.category)
     _, test_dataloader, _, _ = get_dataloader(opt, test_dataset, test_dataset)
@@ -482,6 +545,8 @@ def generate_eval_conditional(model, opt, gpu, outf_syn):
     samples = []
     refs = []
 
+    device = next(model.parameters()).device
+
     mae_embedder = model._get_mae_embedder()
     min_keep = getattr(mae_embedder, "num_group", None)
 
@@ -489,14 +554,14 @@ def generate_eval_conditional(model, opt, gpu, outf_syn):
         for i, data in tqdm(enumerate(test_dataloader), total=len(test_dataloader), desc='Generating Cond Samples'):
             if opt.eval_subset > 0 and (i * opt.bs) >= opt.eval_subset:
                 break
-            x = data['test_points'].transpose(1, 2).to(gpu)
-            m, s = data['mean'].float().to(gpu), data['std'].float().to(gpu)
-            y = data['cate_idx'].to(gpu)
+            x = data['test_points'].transpose(1, 2).to(device)
+            m, s = data['mean'].float().to(device), data['std'].float().to(device)
+            y = data['cate_idx'].to(device)
 
             mae_in = model.build_mae_input(
                 x, mae_points=opt.mae_points, mae_mask_ratio=opt.mae_mask_ratio, min_keep=min_keep
             )
-            gen = model.gen_samples(x.shape, gpu, y, clip_denoised=False, mae=mae_in).detach().cpu()
+            gen = model.gen_samples(x.shape, device, y, clip_denoised=False, mae=mae_in).detach().cpu()
 
             gen = gen.transpose(1, 2).contiguous()
             x_cpu = x.transpose(1, 2).contiguous().detach().cpu()
@@ -601,7 +666,7 @@ def test(gpu, opt, output_dir):
     create networks
     '''
 
-    if opt.eval_conditional:
+    if opt.eval_conditional or opt.eval_unconditional:
         betas = train_get_betas(opt.schedule_type, opt.beta_start, opt.beta_end, opt.time_num)
         model = TrainModel(opt, betas, opt.loss_type, opt.model_mean_type, opt.model_var_type)
     else:
@@ -647,7 +712,7 @@ def test(gpu, opt, output_dir):
             logger.info("Resume Path:%s" % opt.model)
 
         resumed_param = torch.load(opt.model)
-        if opt.eval_conditional:
+        if opt.eval_conditional or opt.eval_unconditional:
             model.load_state_dict(resumed_param['model_state'], strict=False)
         else:
             model.load_state_dict(resumed_param['model_state'])
@@ -657,6 +722,8 @@ def test(gpu, opt, output_dir):
         
         if opt.eval_conditional:
             stats = generate_eval_conditional(model, opt, gpu, outf_syn)
+        elif opt.eval_unconditional:
+            stats = generate_eval_unconditional(model, opt, gpu, outf_syn)
         else:
             stats = generate_eval(model, opt, gpu, outf_syn, evaluator)
 
@@ -696,9 +763,13 @@ def parse_args():
     parser.add_argument('--loss_type', default='mse')
     parser.add_argument('--model_mean_type', default='eps')
     parser.add_argument('--model_var_type', default='fixedsmall')
+    parser.add_argument('--window_size', type=int, default=0)
+    parser.add_argument('--window_block_indexes', type=str, default='0,3,6,9')
+    parser.add_argument('--use_pretrained', action='store_true', help='Use pretrained 2D DiT weights')
 
     parser.add_argument('--model', default='',required=True, help="path to model (to continue training)")
     parser.add_argument('--eval_conditional', action='store_true', help='Enable MAE-conditioned eval')
+    parser.add_argument('--eval_unconditional', action='store_true', help='Enable unconditional eval with MAE-capable model')
     parser.add_argument('--use_mae', action='store_true', help='Enable MAE conditioning (required for conditional eval)')
     parser.add_argument('--mae_config_path', type=str, default='configs/pretrainMAE.yaml')
     parser.add_argument('--mae_points', type=int, default=1024)
