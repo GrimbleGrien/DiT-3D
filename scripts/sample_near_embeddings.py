@@ -19,6 +19,12 @@ def main():
     parser.add_argument("--index", type=int, default=0, help="Index of GT embedding to perturb")
     parser.add_argument("--num_samples", type=int, default=25)
     parser.add_argument("--noise_sigma", type=float, default=0.5, help="Gaussian noise std for local perturbation")
+    parser.add_argument("--near_mode", type=str, default="noise", choices=["noise", "slerp"],
+                        help="How to generate nearby embeddings")
+    parser.add_argument("--knn", type=int, default=20, help="KNN pool size for slerp mode")
+    parser.add_argument("--t_min", type=float, default=0.05, help="Min interpolation t for slerp")
+    parser.add_argument("--t_max", type=float, default=0.25, help="Max interpolation t for slerp")
+    parser.add_argument("--preserve_norm", action="store_true", help="Rescale output to parent L2 norm")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output_path", type=str, default="outputs/embed_diffusion/near_samples.npy")
     parser.add_argument("--match_stats", action="store_true", help="Match stats to dataset embeddings")
@@ -38,8 +44,33 @@ def main():
         raise ValueError("index out of range for input embeddings")
     base = embeds[args.index]
 
-    noise = rng.randn(args.num_samples, base.shape[0]) * args.noise_sigma
-    samples = base[None, :] + noise
+    if args.near_mode == "noise":
+        noise = rng.randn(args.num_samples, base.shape[0]) * args.noise_sigma
+        samples = base[None, :] + noise
+    else:
+        # slerp between base and a nearby real embedding
+        diffs = embeds - base[None, :]
+        dists = np.linalg.norm(diffs, axis=1)
+        nn_idx = np.argsort(dists)[1: max(2, args.knn + 1)]
+        samples = []
+        base_norm = np.linalg.norm(base) + 1e-8
+        for _ in range(args.num_samples):
+            j = rng.choice(nn_idx)
+            other = embeds[j]
+            t = rng.uniform(args.t_min, args.t_max)
+            # slerp
+            b0 = base / (np.linalg.norm(base) + 1e-8)
+            b1 = other / (np.linalg.norm(other) + 1e-8)
+            dot = np.clip(np.dot(b0, b1), -1.0, 1.0)
+            omega = np.arccos(dot)
+            if omega < 1e-6:
+                out = (1 - t) * base + t * other
+            else:
+                out = (np.sin((1 - t) * omega) / np.sin(omega)) * base + (np.sin(t * omega) / np.sin(omega)) * other
+            if args.preserve_norm:
+                out = out / (np.linalg.norm(out) + 1e-8) * base_norm
+            samples.append(out)
+        samples = np.stack(samples, axis=0)
 
     if args.debug_stats:
         l2_01 = float(np.linalg.norm(samples[0] - samples[1])) if samples.shape[0] >= 2 else None

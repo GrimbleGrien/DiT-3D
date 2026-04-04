@@ -2,7 +2,11 @@ python scripts/sample_near_embeddings.py \
     --input_embeddings data/mae_embeddings/embeddings.npy \
     --index 29 \
     --num_samples 25 \
-    --noise_sigma 0.5 \
+    --near_mode slerp \
+    --knn 20 \
+    --t_min 0.05 \
+    --t_max 0.25 \
+    --preserve_norm \
     --output_path outputs/embed_diffusion/near_samples_29.npy \
     --real_embeddings data/mae_embeddings/embeddings.npy \
     --match_stats \
