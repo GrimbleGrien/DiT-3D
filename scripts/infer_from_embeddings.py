@@ -65,6 +65,11 @@ def main():
     parser.add_argument("--clip_denoised", action="store_true")
     parser.add_argument("--class_idx", type=int, default=0, help="Class index used for conditioning")
     parser.add_argument("--debug_stats", action="store_true", help="Print embedding/output diversity stats")
+    parser.add_argument("--dataroot", type=str, default="", help="Optional: use masked GT input for MAE conditioning")
+    parser.add_argument("--category", type=str, default="chair")
+    parser.add_argument("--mae_points", type=int, default=1024)
+    parser.add_argument("--mae_mask_ratio", type=float, default=0.6)
+    parser.add_argument("--gt_index", type=int, default=-1, help="GT index for masked MAE conditioning (required if dataroot set)")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -87,6 +92,25 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
+    mae_in = None
+    if args.dataroot:
+        if args.gt_index < 0:
+            raise ValueError("gt_index must be set when using dataroot for MAE conditioning")
+        from train import get_dataset
+        dataset, _ = get_dataset(args.dataroot, args.npoints, args.category)
+        if args.gt_index >= len(dataset):
+            raise ValueError("gt_index out of range for dataset")
+        sample = dataset[args.gt_index]
+        x0 = sample["train_points"].unsqueeze(0).to(device)  # [1, N, 3]
+        mae_embedder = model._get_mae_embedder()
+        min_keep = getattr(mae_embedder, "num_group", None)
+        mae_in = model.build_mae_input(
+            x0.transpose(1, 2),
+            mae_points=args.mae_points,
+            mae_mask_ratio=args.mae_mask_ratio,
+            min_keep=min_keep
+        )
+
     outputs = []
     grid_idx = 0
     for i in range(0, emb_tensor.shape[0], args.batch_size):
@@ -97,6 +121,7 @@ def main():
             shape=noise_shape,
             device=device,
             y=y,
+            mae=mae_in,
             mae_embed=emb_batch,
             clip_denoised=args.clip_denoised,
         )
