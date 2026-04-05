@@ -5,7 +5,6 @@ python scripts/sample_near_embeddings.py \
     --near_mode sparse_noise \
     --subset_frac 0.2 \
     --noise_mag 0.2 \
-    --preserve_norm \
     --output_path outputs/embed_diffusion/near_samples_29.npy \
     --real_embeddings data/mae_embeddings/embeddings.npy \
     --match_stats \
@@ -14,3 +13,4 @@ python scripts/sample_near_embeddings.py \
     --category chair \
     --npoints 2048 \
     --ref_output_path outputs/embed_diffusion/near_ref_29.png
+    # --preserve_norm \

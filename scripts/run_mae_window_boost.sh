@@ -2,21 +2,21 @@ python scripts/infer_mae_window_boost.py \
     --checkpoint checkpoints/jmae500/best.pth \
     --dataroot ../../PSF/data/ShapeNetCore.v2.PC15k/ \
     --category chair \
-    --idx -1 \
+    --idx 29 \
     --voxel_size 32 \
     --npoints 2048 \
     --mae_config_path configs/pretrainMAE.yaml \
     --mae_points 1024 \
     --mae_mask_ratio 0.6 \
     --window_mode both \
-    --num_windows 12 \
+    --num_windows 8 \
     --overlap_pct 50 \
     --boost_mode multiply \
     --boost_scale 1.5 \
     --window_shape flat \
-    --batch_size 1 \
+    --batch_size 9 \
     --max_total_batch 64 \
     --device cuda:0 \
-    --output_dir outputs/mae_window_boost \
+    --output_dir outputs/window_boost_29 \
     --seed 42 \
     --use_ema

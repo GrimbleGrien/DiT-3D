@@ -70,6 +70,7 @@ def main():
     parser.add_argument("--mae_points", type=int, default=1024)
     parser.add_argument("--mae_mask_ratio", type=float, default=0.6)
     parser.add_argument("--gt_index", type=int, default=-1, help="GT index for masked MAE conditioning (required if dataroot set)")
+    parser.add_argument("--mae_only", action="store_true", help="Ignore mae_embed and condition only on MAE input")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -122,7 +123,7 @@ def main():
             device=device,
             y=y,
             mae=mae_in,
-            mae_embed=emb_batch,
+            mae_embed=None if args.mae_only else emb_batch,
             clip_denoised=args.clip_denoised,
         )
         gen_cpu = gen.detach().cpu()

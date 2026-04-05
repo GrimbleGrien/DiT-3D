@@ -1,0 +1,16 @@
+python scripts/infer_from_embeddings.py \
+    --checkpoint checkpoints/jmae500/best.pth \
+    --embeddings outputs/embed_diffusion/near_samples_29.npy \
+    --output_dir outputs/pc_from_embeds_mae_only \
+    --device cuda:0 \
+    --batch_size 25 \
+    --npoints 2048 \
+    --voxel_size 32 \
+    --mae_points 1024 \
+    --mae_mask_ratio 0.6 \
+    --use_ema \
+    --class_idx 0 \
+    --dataroot ../../PSF/data/ShapeNetCore.v2.PC15k/ \
+    --category chair \
+    --gt_index 29 \
+    --mae_only
