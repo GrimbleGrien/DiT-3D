@@ -1,0 +1,12 @@
+python test.py \
+    --model checkpoints/dit1000/best.pth \
+    --dataroot ../../PSF/data/ShapeNetCore.v2.PC15k/ \
+    --category chair \
+    --model_type DiT-S/4 \
+    --bs 16 \
+    --eval_conditional \
+    --use_mae \
+    --mae_config_path configs/pretrainMAE.yaml \
+    --mae_points 1024 \
+    --mae_mask_ratio 0.6 \
+    --experiment_name dit1000_conditional
