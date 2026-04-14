@@ -1,7 +1,12 @@
 import argparse
 import os
+import sys
 import numpy as np
 import torch
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 from train import (
     Model,
@@ -9,6 +14,7 @@ from train import (
     get_dataset,
     get_default_mae_mask_ratio,
 )
+from utils.visualize import visualize_pointcloud_batch
 
 
 def build_args(cli):
@@ -74,6 +80,7 @@ def main():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--output_pc", type=str, default="generated.npy")
+    parser.add_argument("--output_png", type=str, default="", help="Optional output image path")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--use_ema", action="store_true")
     parser.add_argument("--model_type", type=str, default="DiT-S/4")
@@ -113,7 +120,7 @@ def main():
     ckpt = torch.load(args.checkpoint, map_location=device)
     state_key = "ema" if (args.use_ema and "ema" in ckpt) else "model_state"
     state = normalize_state_dict(ckpt[state_key])
-    model.load_state_dict(state)
+    model.load_state_dict(state, strict=False)
     model.eval()
 
     # run conditioned sampling
@@ -139,6 +146,13 @@ def main():
     }
     print(stats)
     print(f"Saved conditioned samples to {args.output_pc}")
+
+    out_png = args.output_png
+    if not out_png:
+        base, _ = os.path.splitext(args.output_pc)
+        out_png = base + ".png"
+    visualize_pointcloud_batch(out_png, gen.transpose(1, 2), None, None, None)
+    print(f"Saved image to {out_png}")
 
 
 if __name__ == "__main__":
